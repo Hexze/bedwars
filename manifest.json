@@ -1,7 +1,7 @@
 {
   "name": "bedwars",
   "display_name": "BedWars",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Various BedWars tools and quality of life features\n\n- Keyless tablist stats overlay\n- Player respawn timer\n- Auto /who\n- Party counter\n- Height limit indicator",
   "author": "Hexze",
   "homepage": null,
