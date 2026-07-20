@@ -1,0 +1,31 @@
+{
+  "name": "bedwars",
+  "display_name": "BedWars",
+  "version": "0.2.0",
+  "description": "Various BedWars tools and quality of life features\n\n- Keyless tablist stats overlay\n- Player respawn timer\n- Auto /who\n- Party counter\n- Height limit indicator",
+  "author": "Hexze",
+  "homepage": null,
+  "dependencies": [
+    {
+      "name": "hypixel-mod-api",
+      "version": "1.0.0",
+      "optional": false
+    },
+    {
+      "name": "denicker",
+      "version": null,
+      "optional": true
+    },
+    {
+      "name": "urchin",
+      "version": null,
+      "optional": true
+    },
+    {
+      "name": "anticheat",
+      "version": null,
+      "optional": true
+    }
+  ],
+  "min_starfish_version": null
+}
