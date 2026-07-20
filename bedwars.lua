@@ -3,7 +3,7 @@ plugin = {
     displayName = "BedWars",
     command = "bw",
     prefix = "§cB§fW",
-    version = "0.2.0",
+    version = "0.2.1",
     description = [[
 Various BedWars tools and quality of life features
 
@@ -143,6 +143,7 @@ starfish.schema.section({
             headerLabels = true,
             showStars = true, showFkdr = true, showFinals = true,
             showRespawns = true, showFlags = true,
+            keepEliminated = true,
             grayOwnTeam = false
         }
     },
@@ -157,6 +158,7 @@ starfish.schema.section({
         { key = "tab.showFinals", type = "toggle", default = true, description = "Show final kill count." },
         { key = "tab.showRespawns", type = "toggle", default = true, description = "Show a respawn countdown in a player's tab row while they are dead." },
         { key = "tab.showFlags", type = "toggle", default = true, description = "Mark players the anticheat has flagged this game." },
+        { key = "tab.keepEliminated", type = "toggle", default = true, description = "Keep permanently eliminated players in the tab list, grayed out, instead of letting them disappear." },
         { key = "tab.grayOwnTeam", type = "toggle", default = false, description = "Render your own team's stats in gray to de-emphasize them." },
     }
 })
@@ -300,11 +302,11 @@ local function teamColorOf(name)
     return last and ("§" .. last) or "§f"
 end
 
-local function teamFormatted(name)
+local function teamFormatted(name, displayText)
     local team = starfish.players.getTeam(name)
     local prefix = team and team.prefix or ""
     local suffix = team and team.suffix or ""
-    return prefix .. name .. suffix
+    return prefix .. (displayText or name) .. suffix
 end
 
 -- Stats service
@@ -329,6 +331,7 @@ local function parseBedwarsStats(player)
         stars = stars,
         fkdr = fk / math.max(1, bw.final_deaths_bedwars or 1),
         finals = fk,
+        displayName = player.displayname,
         timestamp = os.time()
     }
 end
@@ -381,21 +384,11 @@ local function requestStats(name, callback)
         return
     end
 
-    local key = (realName or name):lower()
+    local query = realName or name
+    local key = query:lower()
     if callback then
         fetchCallbacks[key] = fetchCallbacks[key] or {}
         table.insert(fetchCallbacks[key], callback)
-    end
-
-    local query = realName
-    if not query then
-        local player = starfish.players.find(name)
-        query = player and player.uuid
-    end
-    if not query then
-        stats[key] = { playerNotFound = true }
-        notifyFetched(key)
-        return
     end
 
     fetchStats(key, query)
@@ -464,7 +457,7 @@ local function colorizeStars(stars)
 end
 
 local function statsUnavailable(st)
-    return st.isNicked or st.playerNotFound or st.fetchError
+    return st.isNicked or st.fetchError
 end
 
 local COLUMNS = {
@@ -680,7 +673,7 @@ local function respawnOverride(name)
     if not getConfig("tab.showRespawns", true) then return nil end
     local respawn = game.respawns[name]
     if not respawn then return nil end
-    return teamColorOf(name), " §8[§c" .. respawn.remaining .. "s§8]"
+    return "", " §8[§c" .. respawn.remaining .. "s§8]"
 end
 
 local function updateTabHeader(prefixColumns, suffixColumns, maxNameWidth)
@@ -695,7 +688,6 @@ local function clearTabDecorations()
     for _, entry in pairs(managed) do
         starfish.display.clearPrefix(entry.uuid)
         starfish.display.clearSuffix(entry.uuid)
-        starfish.display.unpinFromTab(entry.uuid)
     end
     starfish.display.clearTabHeaderAppend()
     managed = {}
@@ -758,7 +750,6 @@ local function activateTab(names)
             local player = starfish.players.find(name)
             if player and player.uuid then
                 managed[name] = { uuid = player.uuid }
-                starfish.display.pinInTab(player.uuid)
                 requestStats(name)
             else
                 pendingJoins[name] = true
@@ -775,6 +766,90 @@ local function activateTab(names)
     end
 end
 
+-- Tab entry protection
+
+local function shouldProtect(name)
+    if not managed[name] then return false end
+    if game.eliminated[name] and not getConfig("tab.keepEliminated", true) then
+        return false
+    end
+    return true
+end
+
+starfish.packets.intercept("inbound", starfish.protocol.PLAYER_LIST_ITEM, function(packet)
+    local reader = starfish.encoding.reader(packet.data)
+    reader:varint()
+    if reader:varint() ~= starfish.protocol.PLAYER_LIST_ACTION_REMOVE then return end
+
+    local protectedUuids = {}
+    for name, entry in pairs(managed) do
+        if shouldProtect(name) then
+            protectedUuids[entry.uuid] = true
+        end
+    end
+
+    local count = reader:varint()
+    local kept = {}
+    for _ = 1, count do
+        local uuid = reader:uuid()
+        if not protectedUuids[uuid] then
+            table.insert(kept, uuid)
+        end
+    end
+    if #kept == count then return end
+    if #kept == 0 then
+        packet.drop()
+        return
+    end
+
+    local writer = starfish.encoding.writer()
+    writer:varint(packet.id)
+    writer:varint(starfish.protocol.PLAYER_LIST_ACTION_REMOVE)
+    writer:varint(#kept)
+    for _, uuid in ipairs(kept) do
+        writer:uuid(uuid)
+    end
+    packet.replace(writer:build())
+end)
+
+starfish.packets.intercept("inbound", starfish.protocol.TEAMS, function(packet)
+    local reader = starfish.encoding.reader(packet.data)
+    reader:varint()
+    local teamName = reader:string()
+    if reader:byte() ~= starfish.protocol.TEAM_MODE_REMOVE_PLAYERS then return end
+
+    local protectedNames = {}
+    for name in pairs(managed) do
+        if shouldProtect(name) then
+            protectedNames[name] = true
+        end
+    end
+
+    local count = reader:varint()
+    local kept = {}
+    for _ = 1, count do
+        local playerName = reader:string()
+        if not protectedNames[playerName] then
+            table.insert(kept, playerName)
+        end
+    end
+    if #kept == count then return end
+    if #kept == 0 then
+        packet.drop()
+        return
+    end
+
+    local writer = starfish.encoding.writer()
+    writer:varint(packet.id)
+    writer:string(teamName)
+    writer:byte(starfish.protocol.TEAM_MODE_REMOVE_PLAYERS)
+    writer:varint(#kept)
+    for _, playerName in ipairs(kept) do
+        writer:string(playerName)
+    end
+    packet.replace(writer:build())
+end)
+
 -- Chat stat lines
 
 local function blockedMarker(name)
@@ -785,17 +860,15 @@ local function blockedMarker(name)
 end
 
 local function statLine(name, st)
+    local displayName = (st and st.displayName) or name
     if not st then
-        return teamFormatted(name) .. " §8- §cstats unavailable" .. blockedMarker(name)
+        return teamFormatted(name, displayName) .. " §8- §cstats unavailable" .. blockedMarker(name)
     end
     if st.isNicked then
-        return teamFormatted(name) .. " §8- §cnicked" .. blockedMarker(name)
-    end
-    if st.playerNotFound then
-        return teamFormatted(name) .. " §8- §cplayer not found" .. blockedMarker(name)
+        return teamFormatted(name, displayName) .. " §8- §cnicked" .. blockedMarker(name)
     end
     if st.fetchError then
-        return teamFormatted(name) .. " §8- §crequest failed (" .. st.fetchError .. ")" .. blockedMarker(name)
+        return teamFormatted(name, displayName) .. " §8- §crequest failed (" .. st.fetchError .. ")" .. blockedMarker(name)
     end
 
     local parts = {}
@@ -807,7 +880,7 @@ local function statLine(name, st)
             table.insert(parts, "§7" .. column.header .. " " .. text)
         end
     end
-    return teamFormatted(name) .. " §8- §r" .. table.concat(parts, " §8| §r") .. blockedMarker(name)
+    return teamFormatted(name, displayName) .. " §8- §r" .. table.concat(parts, " §8| §r") .. blockedMarker(name)
 end
 
 local function printStats(name)
@@ -1141,7 +1214,6 @@ starfish.events.on("player_join", function(event)
     if not tabActive or not pendingJoins[event.name] then return end
     pendingJoins[event.name] = nil
     managed[event.name] = { uuid = event.uuid }
-    starfish.display.pinInTab(event.uuid)
     requestStats(event.name)
     dirty = true
 end)
