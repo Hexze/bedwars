@@ -1,8 +1,8 @@
 {
   "name": "bedwars",
   "display_name": "BedWars",
-  "version": "0.2.1",
-  "description": "Various BedWars tools and quality of life features\n\n- Keyless tablist stats overlay\n- Player respawn timer\n- Auto /who\n- Party counter\n- Height limit indicator",
+  "version": "0.3.0",
+  "description": "Various BedWars tools and quality of life features",
   "author": "Hexze",
   "homepage": null,
   "dependencies": [
@@ -18,11 +18,6 @@
     },
     {
       "name": "urchin",
-      "version": null,
-      "optional": true
-    },
-    {
-      "name": "anticheat",
       "version": null,
       "optional": true
     }
