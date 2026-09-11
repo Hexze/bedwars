@@ -3,8 +3,10 @@ plugin = {
     displayName = "BedWars",
     command = "bw",
     prefix = "§cB§fW",
-    version = "0.2.1",
-    description = [[
+    version = "0.3.0",
+    author = "Starfish",
+    description = "Various BedWars tools and quality of life features",
+    readme = [[
 Various BedWars tools and quality of life features
 
 - Keyless tablist stats overlay
@@ -15,8 +17,7 @@ Various BedWars tools and quality of life features
 dependencies = {
         { name = "hypixel-mod-api", minVersion = "1.0.0" },
         { name = "denicker",  optional = true },
-        { name = "urchin",    optional = true },
-        { name = "anticheat", optional = true }
+        { name = "urchin",    optional = true }
     }
 }
 
@@ -32,6 +33,7 @@ local AUTO_WHO_DEDUPE_MS = 5000
 local PARTY_GROUP_MS = 250
 local RESPAWN_SECONDS = 5
 local RECONNECT_RESPAWN_SECONDS = 10
+local RESPAWN_CONFIRM_GRACE_MS = 500
 local HEIGHT_BAR_MS = 250
 local HEIGHT_WARN_RANGE = 10
 local GAME_START_PHRASE = "powerful upgrades"
@@ -40,11 +42,13 @@ local REJOIN_MESSAGES = {
     ["You will respawn in 10 seconds!"] = "respawn",
     ["Your bed was destroyed so you are a spectator!"] = "spectator",
 }
-
 local TEAM_COLORS = {
     Red = "§c", Blue = "§9", Green = "§a", Yellow = "§e",
     Aqua = "§b", White = "§f", Pink = "§d", Gray = "§8",
 }
+
+local GRAYED_COLOR = "§8"
+local RESPAWNING_COLOR = "§7"
 
 local HEIGHT_LIMITS = {
     acropolis = 101, aetius = 95, airshow = 101, alaric = 98, amazon = 94,
@@ -129,105 +133,191 @@ local STAT_COLORS = {
     finals = function(v)
         return statTier(v, {{100000, "5"}, {50000, "d"}, {25000, "4"}, {15000, "c"}, {7500, "6"}, {5000, "e"}, {2500, "2"}, {1000, "a"}, {500, "f"}})
     end,
+    kdr = function(v)
+        return statTier(v, {{8, "5"}, {7, "d"}, {6, "4"}, {5, "c"}, {4, "6"}, {3, "e"}, {2, "2"}, {1, "a"}, {0.5, "f"}})
+    end,
+    winstreak = function(v)
+        return statTier(v, {{500, "5"}, {250, "d"}, {100, "4"}, {75, "c"}, {50, "6"}, {40, "e"}, {25, "2"}, {15, "a"}, {5, "f"}})
+    end,
 }
+
+-- Column slots
+
+local SLOTS = {
+    { content = "star",      shown = true },
+    { content = "username",  shown = true },
+    { content = "winstreak", shown = false },
+    { content = "fkdr",      shown = true },
+    { content = "finals",    shown = true },
+    { content = "kdr",       shown = false },
+}
+
+local SLOT_CONTENTS = {
+    { text = "Star", value = "star" },
+    { text = "Username", value = "username" },
+    { text = "Winstreak", value = "winstreak" },
+    { text = "FKDR", value = "fkdr" },
+    { text = "Finals", value = "finals" },
+    { text = "KDR", value = "kdr" },
+}
+
+local function slotKey(index, field)
+    return "tab.slot" .. index .. "." .. field
+end
 
 -- Config schema
 
-starfish.schema.section({
-    key = "tab",
-    label = "Tab Stats",
-    description = "Show BedWars stats in the tab list after /who.",
-    defaults = {
-        tab = {
-            mode = "compact",
-            headerLabels = true,
-            showStars = true, showFkdr = true, showFinals = true,
-            showRespawns = true, showFlags = true,
-            keepEliminated = true,
-            grayOwnTeam = false
+local function registerTabSection()
+    starfish.schema.section({
+        key = "tab",
+        label = "Tab Stats",
+        description = "Show BedWars stats in the tab list after /who.",
+        settings = {
+            { key = "tab.enabled", type = "toggle", default = true, description = "Show BedWars stats in the tab list." },
         }
-    },
-    settings = {
-        { key = "tab.mode", type = "cycle", description = "Tab stats display mode.", displayLabel = "Mode", values = {
-            { text = "Compact", value = "compact" },
-            { text = "Off", value = "off" }
-        }},
-        { key = "tab.headerLabels", type = "toggle", default = true, description = "Show column labels in the tab list header instead of next to each value." },
-        { key = "tab.showStars", type = "toggle", default = true, description = "Show BedWars stars." },
-        { key = "tab.showFkdr", type = "toggle", default = true, description = "Show final kill/death ratio." },
-        { key = "tab.showFinals", type = "toggle", default = true, description = "Show final kill count." },
-        { key = "tab.showRespawns", type = "toggle", default = true, description = "Show a respawn countdown in a player's tab row while they are dead." },
-        { key = "tab.showFlags", type = "toggle", default = true, description = "Mark players the anticheat has flagged this game." },
-        { key = "tab.keepEliminated", type = "toggle", default = true, description = "Keep permanently eliminated players in the tab list, grayed out, instead of letting them disappear." },
-        { key = "tab.grayOwnTeam", type = "toggle", default = false, description = "Render your own team's stats in gray to de-emphasize them." },
-    }
-})
+    })
+end
 
-starfish.schema.section({
-    key = "who",
-    label = "Auto /who",
-    description = "Automatically run /who when a game starts.",
-    defaults = { who = { enabled = true, delay = 500 } },
-    settings = {
-        { key = "who.enabled", type = "toggle", default = true, description = "Send /who at game start to load everyone's stats." },
-        { key = "who.delay", type = "cycle", description = "Delay before sending /who.", displayLabel = "Delay", values = {
-            { text = "0ms", value = 0 },
-            { text = "500ms", value = 500 },
-            { text = "1000ms", value = 1000 }
-        }},
-    }
-})
+local function registerGrayOwnTeamSection()
+    starfish.schema.section({
+        key = "grayOwnTeam",
+        label = "Gray Own Team",
+        description = "Render your own team's stats in gray to de-emphasize them.",
+        settings = {
+            { key = "tab.grayOwnTeam", type = "toggle", default = false, description = "Render your own team's stats in gray to de-emphasize them." },
+        }
+    })
+end
 
-starfish.schema.section({
-    key = "lobbyStats",
-    label = "Lobby Stats",
-    description = "Show stats for players in the pre-game lobby.",
-    defaults = { lobbyStats = { enabled = true, mentions = true } },
-    settings = {
-        { key = "lobbyStats.enabled", type = "toggle", default = true, description = "Show a stat line for every player who chats in the pre-game lobby." },
-        { key = "lobbyStats.mentions", type = "toggle", default = true, description = "Show a stat line for anyone whose message mentions your name." },
-    }
-})
+local function registerRespawnTimerSection()
+    starfish.schema.section({
+        key = "respawnTimer",
+        label = "Respawn Timer",
+        description = "Show a respawn countdown in a player's tab row while they are dead.",
+        settings = {
+            { key = "respawnTimer.enabled", type = "toggle", default = true, description = "Show a respawn countdown in a player's tab row while they are dead." },
+        }
+    })
+end
 
-starfish.schema.section({
-    key = "requeue",
-    label = "Requeue",
-    description = "Requeue the last played mode with /rq.",
-    defaults = { requeue = { auto = false, delay = 1000 } },
-    settings = {
-        { key = "requeue.auto", type = "toggle", default = false, description = "Automatically requeue when a game ends." },
-        { key = "requeue.delay", type = "cycle", description = "Delay before auto-requeueing.", displayLabel = "Delay", values = {
-            { text = "0ms", value = 0 },
-            { text = "1000ms", value = 1000 },
-            { text = "2000ms", value = 2000 },
-            { text = "3000ms", value = 3000 }
-        }},
-    }
-})
+local function registerKeepDisconnectedSection()
+    starfish.schema.section({
+        key = "keepDisconnected",
+        label = "Keep Disconnected",
+        description = "Keep a disconnected player's tab entry visible, marked [DISCONNECTED], until they reconnect.",
+        settings = {
+            { key = "keepDisconnected.enabled", type = "toggle", default = true, description = "Keep a disconnected player's tab entry visible, marked [DISCONNECTED], until they reconnect." },
+        }
+    })
+end
 
-starfish.schema.section({
-    key = "partyCounter",
-    label = "Party Counter",
-    description = "Detect groups of players joining or leaving the lobby together.",
-    defaults = { partyCounter = { enabled = true } },
-    settings = {
-        { key = "partyCounter.enabled", type = "toggle", default = true, description = "Announce when a party of players joins or leaves your lobby." },
-    }
-})
+local function registerSlotSections()
+    for index, slot in ipairs(SLOTS) do
+        starfish.schema.section({
+            key = "tab.slot" .. index,
+            label = "Column Slot " .. index,
+            description = "Configure tab column slot " .. index .. ".",
+            settings = {
+                { key = slotKey(index, "enabled"), type = "toggle", default = slot.shown,
+                  description = "Show tab column slot " .. index .. "." },
+                { key = slotKey(index, "content"), type = "cycle", default = slot.content, values = SLOT_CONTENTS,
+                  description = "What tab column slot " .. index .. " shows." },
+            }
+        })
+    end
+end
 
-starfish.schema.section({
-    key = "heightLimit",
-    label = "Height Limit",
-    description = "Warn in the action bar as you build near the map's height limit.",
-    defaults = { heightLimit = { enabled = true } },
-    settings = {
-        { key = "heightLimit.enabled", type = "toggle", default = true, description = "Show a live action bar warning when you are close to the build height limit." },
-    }
-})
+local function registerWhoSection()
+    starfish.schema.section({
+        key = "who",
+        label = "Auto /who",
+        description = "Automatically run /who when a game starts.",
+        settings = {
+            { key = "who.enabled", type = "toggle", default = true, description = "Send /who at game start to load everyone's stats." },
+            { key = "who.delay", type = "cycle", default = 500, description = "Delay before sending /who.", displayLabel = "Delay", values = {
+                { text = "0ms", value = 0 },
+                { text = "500ms", value = 500 },
+                { text = "1000ms", value = 1000 }
+            }},
+        }
+    })
+end
+
+local function registerMentionStatsSection()
+    starfish.schema.section({
+        key = "mentionStats",
+        label = "Show Stats On Mention",
+        description = "Show a player's stats whenever they mention your name in chat.",
+        settings = {
+            { key = "mentionStats.enabled", type = "toggle", default = true, description = "Show a stat line for anyone whose chat message mentions your name." },
+        }
+    })
+end
+
+local function registerPartyCounterSection()
+    starfish.schema.section({
+        key = "partyCounter",
+        label = "Party Counter",
+        description = "Detect groups of players joining or leaving the lobby together.",
+        settings = {
+            { key = "partyCounter.enabled", type = "toggle", default = true, description = "Announce when a party of players joins or leaves your lobby." },
+        }
+    })
+end
+
+local function registerHeightLimitSection()
+    starfish.schema.section({
+        key = "heightLimit",
+        label = "Height Limit",
+        description = "Warn in the action bar as you build near the map's height limit.",
+        settings = {
+            { key = "heightLimit.enabled", type = "toggle", default = true, description = "Show a live action bar warning when you are close to the build height limit." },
+        }
+    })
+end
+
+local function registerRequeueSection()
+    starfish.schema.section({
+        key = "requeue",
+        label = "Requeue",
+        description = "Requeue the last played mode with /rq.",
+        settings = {
+            { key = "requeue.auto", type = "toggle", default = false, description = "Automatically requeue when a game ends." },
+            { key = "requeue.delay", type = "cycle", default = 1000, description = "Delay before auto-requeueing.", displayLabel = "Delay", values = {
+                { text = "0ms", value = 0 },
+                { text = "1000ms", value = 1000 },
+                { text = "2000ms", value = 2000 },
+                { text = "3000ms", value = 3000 }
+            }},
+        }
+    })
+end
+
+local function registerSchema()
+    registerWhoSection()
+    registerTabSection()
+    if starfish.config.get("tab.enabled", true) then
+        registerSlotSections()
+        registerGrayOwnTeamSection()
+    end
+    registerRespawnTimerSection()
+    registerKeepDisconnectedSection()
+    registerMentionStatsSection()
+    registerPartyCounterSection()
+    registerHeightLimitSection()
+    registerRequeueSection()
+end
+
+registerSchema()
+
+local function syncTabSchemaVisibility()
+    starfish.schema.clear()
+    registerSchema()
+end
 
 -- State
 
-local location = { inBedwars = false, inGame = false, map = nil }
+local location = { server = nil, inBedwars = false, inGame = false, map = nil }
 local lastMode = nil
 local stats = {}
 local fetchCallbacks = {}
@@ -237,27 +327,16 @@ local lastApplied = {}
 local tabActive = false
 local refreshTimer = nil
 local dirty = false
-local game = { started = false, eliminated = {}, respawns = {} }
-local lobby = { active = false, statsSeen = {}, mentionsSeen = {} }
+local game = { started = false, eliminated = {}, respawns = {}, disconnected = {} }
+local mentions = { seen = {} }
 local party = { count = 0, timer = nil, maxPlayers = 0, isJoin = false }
 local heightWatch = { limit = nil, timer = nil }
-local flagged = {}
 local lastWhoAt = 0
 local requeueTriggered = false
 
 local NICKED_STATS = { isNicked = true }
 
 -- Helpers
-
-local function getConfig(key, default)
-    local val = starfish.config.get(key)
-    if val ~= nil then return val end
-    return default
-end
-
-local function stripColors(text)
-    return text:gsub("§.", "")
-end
 
 local function formatNumber(n)
     local result = tostring(math.floor(n))
@@ -269,44 +348,52 @@ local function formatNumber(n)
     return result
 end
 
-local function tabMode()
-    return getConfig("tab.mode", "compact")
-end
-
 local function tabEnabled()
-    return tabMode() ~= "off"
-end
-
-local function callPlugin(name, func, ...)
-    if starfish.plugins.exists(name) then
-        return starfish.plugins.call(name, func, ...)
-    end
-    return nil
+    return starfish.config.get("tab.enabled", true)
 end
 
 local function getRealName(name)
-    return callPlugin("denicker", "getRealName", name)
+    return starfish.plugins.optional("denicker").getRealName(name)
 end
 
 local function isNicked(name)
-    return callPlugin("denicker", "isNicked", name) == true
+    return starfish.plugins.optional("denicker").isNicked(name) == true
+end
+
+local function resolveTeam(name)
+    local player = starfish.players.byName(name)
+    return player and player.team
+end
+
+local function teamPrefixOf(name)
+    local entry = managed[name]
+    if entry and entry.teamPrefix then return entry.teamPrefix end
+    local team = resolveTeam(name)
+    return (team and team.prefix) or ""
+end
+
+local function teamSuffixOf(name)
+    local team = resolveTeam(name)
+    return (team and team.suffix) or ""
+end
+
+local function displayNameOf(name)
+    local entry = managed[name]
+    if entry and entry.displayName then return entry.displayName end
+    local player = starfish.players.byName(name)
+    return (player and player.displayName) or name
 end
 
 local function teamColorOf(name)
-    local team = starfish.players.getTeam(name)
-    if not team or not team.prefix then return "§f" end
     local last = nil
-    for code in team.prefix:gmatch("§([0-9a-f])") do
+    for code in teamPrefixOf(name):gmatch("§([0-9a-f])") do
         last = code
     end
     return last and ("§" .. last) or "§f"
 end
 
 local function teamFormatted(name, displayText)
-    local team = starfish.players.getTeam(name)
-    local prefix = team and team.prefix or ""
-    local suffix = team and team.suffix or ""
-    return prefix .. (displayText or name) .. suffix
+    return teamPrefixOf(name) .. (displayText or name) .. teamSuffixOf(name)
 end
 
 -- Stats service
@@ -324,6 +411,7 @@ end
 local function parseBedwarsStats(player)
     local bw = player.stats and player.stats.Bedwars or {}
     local fk = bw.final_kills_bedwars or 0
+    local kills = bw.kills_bedwars or 0
     local stars = player.achievements and player.achievements.bedwars_level
         or levelFromXp(bw.Experience or 0)
 
@@ -331,6 +419,8 @@ local function parseBedwarsStats(player)
         stars = stars,
         fkdr = fk / math.max(1, bw.final_deaths_bedwars or 1),
         finals = fk,
+        kdr = kills / math.max(1, bw.deaths_bedwars or 1),
+        winstreak = bw.winstreak,
         displayName = player.displayname,
         timestamp = os.time()
     }
@@ -366,7 +456,7 @@ local function fetchStats(key, query, attempt)
         else
             local tries = attempt or 1
             if tries < FETCH_RETRIES then
-                starfish.events.delay(RETRY_BASE_MS * 2 ^ (tries - 1), function()
+                starfish.timers.delay(RETRY_BASE_MS * 2 ^ (tries - 1), function()
                     fetchStats(key, query, tries + 1)
                 end)
             else
@@ -402,21 +492,20 @@ end
 
 -- Font metrics
 
-local SPACE_WIDTH = 3.2
-local DEFAULT_CHAR_WIDTH = 4.0
+local SPACE_WIDTH = 4
+local DEFAULT_CHAR_WIDTH = 6
 local CHAR_WIDTH = {
-    ["I"] = 2.667,
-    ["f"] = 3.333, ["i"] = 1.333, ["k"] = 3.333, ["l"] = 2.0, ["t"] = 2.667,
-    ["["] = 2.667, ["]"] = 2.667, ["."] = 1.333, [","] = 1.333, ["|"] = 1.333,
-    ["!"] = 1.333,
-    ["✫"] = 5.667, ["✪"] = 5.667, ["⚝"] = 5.667, ["✥"] = 6.0, ["✭"] = 5.667,
-    ["✓"] = 5.667, ["✗"] = 5.667,
     [" "] = SPACE_WIDTH,
+    ["!"] = 2, ["\""] = 4, ["'"] = 2, ["("] = 5, [")"] = 5, ["*"] = 4,
+    [","] = 2, ["."] = 2, [":"] = 2, [";"] = 2, ["<"] = 5, [">"] = 5,
+    ["@"] = 7, ["["] = 4, ["]"] = 4, ["`"] = 3, ["{"] = 5, ["|"] = 2, ["}"] = 5,
+    ["I"] = 4, ["f"] = 5, ["i"] = 2, ["k"] = 5, ["l"] = 3, ["t"] = 4,
+    ["✫"] = 8.5, ["✪"] = 8.5, ["⚝"] = 8.5, ["✥"] = 9, ["✭"] = 8.5,
 }
 
 local function textWidth(text)
     local width = 0
-    for _, code in utf8.codes(stripColors(text)) do
+    for _, code in utf8.codes(starfish.text.plain(text)) do
         width = width + (CHAR_WIDTH[utf8.char(code)] or DEFAULT_CHAR_WIDTH)
     end
     return width
@@ -461,76 +550,126 @@ local function statsUnavailable(st)
 end
 
 local COLUMNS = {
-    {
-        key = "stars",
-        config = "tab.showStars",
+    star = {
         header = "✫",
-        position = "prefix",
+        selfLabeled = true,
         value = function(st)
             if not st or st.isLoading then return "§8[---✫]" end
             if statsUnavailable(st) then return "§c[???✫]" end
             return colorizeStars(st.stars)
         end
     },
-    {
-        key = "fkdr",
-        config = "tab.showFkdr",
+    username = {
+        header = "Name",
+        isName = true
+    },
+    winstreak = {
+        header = "WS",
+        value = function(st)
+            if not st or st.isLoading then return "§8-" end
+            if statsUnavailable(st) or st.winstreak == nil then return "§c?" end
+            return STAT_COLORS.winstreak(st.winstreak) .. formatNumber(st.winstreak)
+        end
+    },
+    fkdr = {
         header = "FKDR",
-        position = "prefix",
         value = function(st)
             if not st or st.isLoading then return "§8-.-" end
             if statsUnavailable(st) then return "§c?.?" end
             return STAT_COLORS.fkdr(st.fkdr) .. string.format("%.1f", st.fkdr)
         end
     },
-    {
-        key = "finals",
-        config = "tab.showFinals",
+    finals = {
         header = "Finals",
-        position = "suffix",
         value = function(st)
             if not st or st.isLoading then return "§8-" end
             if statsUnavailable(st) then return "§c?" end
             return STAT_COLORS.finals(st.finals) .. formatNumber(st.finals)
         end
     },
+    kdr = {
+        header = "KDR",
+        value = function(st)
+            if not st or st.isLoading then return "§8-.-" end
+            if statsUnavailable(st) then return "§c?.?" end
+            return STAT_COLORS.kdr(st.kdr) .. string.format("%.1f", st.kdr)
+        end
+    },
 }
 
 local SUFFIX_PRIORITY = 100
-local FLAG_BADGE = "§4[!] "
 
-local function enabledColumns()
-    local columns = {}
-    for _, column in ipairs(COLUMNS) do
-        if getConfig(column.config, true) then
+local function slotColumn(index, slot)
+    if not starfish.config.get(slotKey(index, "enabled"), slot.shown) then return nil end
+    return COLUMNS[starfish.config.get(slotKey(index, "content"), slot.content)]
+end
+
+local function visibleColumns()
+    local columns, hasName = {}, false
+    for index, slot in ipairs(SLOTS) do
+        local column = slotColumn(index, slot)
+        if column and not (column.isName and hasName) then
+            hasName = hasName or column.isName == true
             table.insert(columns, column)
         end
     end
     return columns
 end
 
-local function columnsByPosition(columns, position)
-    local filtered = {}
-    for _, column in ipairs(columns) do
-        if column.position == position then
-            table.insert(filtered, column)
+local function nameColumnIndex(columns)
+    for index, column in ipairs(columns) do
+        if column.isName then return index end
+    end
+    return #columns + 1
+end
+
+-- Tab entry protection
+
+local function shouldProtect(name)
+    if not managed[name] then return false end
+    if game.disconnected[name] then
+        return starfish.config.get("keepDisconnected.enabled", true)
+    end
+    if game.eliminated[name] then return false end
+    return true
+end
+
+local function syncRemovalHolds()
+    for name, entry in pairs(managed) do
+        if shouldProtect(name) then
+            starfish.display.holdRemoval(entry.uuid)
+        else
+            starfish.display.releaseRemoval(entry.uuid)
         end
     end
-    return filtered
 end
 
 -- Tab manager
 
-local function computeColumnWidths(columns)
-    local widths = {}
-    for i, column in ipairs(columns) do
-        widths[i] = 0
-        for name in pairs(managed) do
-            local width = textWidth(column.value(statsFor(name), name))
-            if width > widths[i] then widths[i] = width end
-        end
+local function snapshotIdentity(name, entry)
+    local player = starfish.players.byName(name)
+    if player then
+        entry.displayName = player.displayName or player.name
     end
-    return widths
+    local team = resolveTeam(name)
+    if team and team.prefix and team.prefix ~= "" then
+        entry.teamPrefix = team.prefix
+    end
+end
+
+local function snapshotIdentities()
+    for name, entry in pairs(managed) do
+        snapshotIdentity(name, entry)
+    end
+end
+
+local function manage(name, uuid)
+    local entry = { uuid = uuid }
+    managed[name] = entry
+    snapshotIdentity(name, entry)
+    starfish.display.holdRemoval(uuid)
+    requestStats(name)
+    dirty = true
 end
 
 local function myTeamColor()
@@ -540,12 +679,11 @@ end
 
 local function isGrayed(name, teamColor, ownTeamColor)
     if game.eliminated[name] then return true end
-    return ownTeamColor ~= nil and getConfig("tab.grayOwnTeam", false) and teamColor == ownTeamColor
+    return ownTeamColor ~= nil and starfish.config.get("tab.grayOwnTeam", false) and teamColor == ownTeamColor
 end
 
 local function teamPrefixWidth(name)
-    local team = starfish.players.getTeam(name)
-    return team and team.prefix and textWidth(team.prefix) or 0
+    return textWidth(teamPrefixOf(name))
 end
 
 local function computeMaxTeamPrefixWidth()
@@ -557,25 +695,14 @@ local function computeMaxTeamPrefixWidth()
     return maxWidth
 end
 
-local function displayNameOf(name)
-    local player = starfish.players.find(name)
-    return (player and player.displayName) or name
-end
-
-local function flagBadge(name)
-    if flagged[name] and getConfig("tab.showFlags", true) then return FLAG_BADGE end
-    return ""
-end
-
 local function nameColumnWidth(name, uuid)
-    return textWidth(flagBadge(name))
-        + textWidth(displayNameOf(name))
-        + textWidth(starfish.display.getOthersPrefix(uuid))
-        + textWidth(starfish.display.getOthersSuffix(uuid))
+    return textWidth(displayNameOf(name))
+        + textWidth(starfish.display.othersPrefix(uuid))
+        + textWidth(starfish.display.othersSuffix(uuid))
 end
 
 local function computeMaxNameColumnWidth()
-    local maxWidth = 0
+    local maxWidth = textWidth("Name")
     for name, entry in pairs(managed) do
         local width = nameColumnWidth(name, entry.uuid)
         if width > maxWidth then maxWidth = width end
@@ -583,12 +710,47 @@ local function computeMaxNameColumnWidth()
     return maxWidth
 end
 
+local function maxColumnWidth(column)
+    if column.isName then return computeMaxNameColumnWidth() end
+    local maxWidth = textWidth(column.header)
+    for name in pairs(managed) do
+        local width = textWidth(column.value(statsFor(name), name))
+        if width > maxWidth then maxWidth = width end
+    end
+    return maxWidth
+end
+
+local function computeLayout()
+    local columns = visibleColumns()
+    local widths = {}
+    for index, column in ipairs(columns) do
+        widths[index] = maxColumnWidth(column)
+    end
+
+    local nameIndex = nameColumnIndex(columns)
+    widths[nameIndex] = widths[nameIndex] or computeMaxNameColumnWidth()
+
+    return {
+        columns = columns,
+        widths = widths,
+        nameIndex = nameIndex,
+        teamPrefixPad = computeMaxTeamPrefixWidth(),
+        ownTeamColor = myTeamColor()
+    }
+end
+
 local SEPARATOR = " §8| §r"
 
-local function emitColumn(parts, x, target, text, colWidth, alignRight)
-    target = target + colWidth
+local function emitFixed(row, parts, text)
+    table.insert(parts, text)
+    local width = textWidth(text)
+    row.x, row.target = row.x + width, row.target + width
+end
+
+local function emitAligned(row, parts, text, width, alignRight)
+    row.target = row.target + width
     local textW = textWidth(text)
-    local pad, padW = padSpaces(target - x - textW)
+    local pad, padW = padSpaces(row.target - row.x - textW)
 
     if alignRight then
         table.insert(parts, pad)
@@ -598,96 +760,123 @@ local function emitColumn(parts, x, target, text, colWidth, alignRight)
         table.insert(parts, pad)
     end
 
-    return x + textW + padW, target
+    row.x = row.x + textW + padW
 end
 
-local function joinColumns(parts, x, target, name, columns, widths, grayed, alignRight)
-    local st = statsFor(name)
-    for i, column in ipairs(columns) do
-        if i > 1 then
-            table.insert(parts, SEPARATOR)
-            local sepW = textWidth(SEPARATOR)
-            x, target = x + sepW, target + sepW
-        end
-        local text = column.value(st, name)
-        if grayed then
-            text = "§8" .. stripColors(text)
-        end
-        x, target = emitColumn(parts, x, target, text, widths[i], alignRight)
+local function cellText(row, column)
+    local text = column.value(statsFor(row.name), row.name)
+    if row.grayed then return GRAYED_COLOR .. starfish.text.plain(text) end
+    return text
+end
+
+local function emitCells(row, parts, first, last, alignRight)
+    for index = first, last do
+        if index > 1 then emitFixed(row, parts, SEPARATOR) end
+        local column = row.layout.columns[index]
+        emitAligned(row, parts, cellText(row, column), row.layout.widths[index], alignRight)
     end
-    return x, target
 end
 
-local function buildPrefix(name, prefixColumns, widths, ownTeamColor, teamPrefixPad)
+local function emitNameCell(row, uuid)
+    row.x = row.x + nameColumnWidth(row.name, uuid)
+    row.target = row.target + row.layout.widths[row.layout.nameIndex]
+    local pad, padW = padSpaces(row.target - row.x)
+    table.insert(row.suffix, pad)
+    row.x = row.x + padW
+end
+
+local function respawnCountdown(name)
+    if not starfish.config.get("respawnTimer.enabled", true) then return nil end
+    local respawn = game.respawns[name]
+    return respawn and respawn.remaining
+end
+
+local function nameColor(name, teamColor)
+    if game.eliminated[name] then return GRAYED_COLOR end
+    return teamColor
+end
+
+local DISCONNECTED_LABEL = "DISCONNECTED"
+
+local function bracketRow(label)
+    return " §8[§c" .. label .. "§8] " .. RESPAWNING_COLOR, ""
+end
+
+local function respawnRow(remaining)
+    return bracketRow(remaining .. "s")
+end
+
+local function disconnectedRow()
+    return bracketRow(DISCONNECTED_LABEL)
+end
+
+local function startRow(name, layout)
+    local ownPrefixWidth = teamPrefixWidth(name)
+    local teamPad, teamPadW = padSpaces(layout.teamPrefixPad - ownPrefixWidth)
     local teamColor = teamColorOf(name)
-    local grayed = isGrayed(name, teamColor, ownTeamColor)
 
-    local thisTeamPrefixWidth = teamPrefixWidth(name)
-    local teamPad, teamPadW = padSpaces(teamPrefixPad - thisTeamPrefixWidth)
-    local parts = { teamPad }
-    local x, target = thisTeamPrefixWidth + teamPadW, teamPrefixPad
-
-    if #prefixColumns > 0 then
-        x, target = joinColumns(parts, x, target, name, prefixColumns, widths, grayed, true)
-        table.insert(parts, " §8| ")
-        local sepW = textWidth(" §8| ")
-        x, target = x + sepW, target + sepW
-    end
-    table.insert(parts, flagBadge(name))
-    table.insert(parts, game.eliminated[name] and "§7" or teamColor)
-
-    return table.concat(parts), x, target
+    return {
+        name = name,
+        teamColor = teamColor,
+        grayed = isGrayed(name, teamColor, layout.ownTeamColor),
+        layout = layout,
+        prefix = { teamPad },
+        suffix = {},
+        x = ownPrefixWidth + teamPadW,
+        target = layout.teamPrefixPad
+    }
 end
 
-local function buildSuffix(name, uuid, suffixColumns, widths, ownTeamColor, maxNameWidth, x, target)
-    if #suffixColumns == 0 then return "" end
-    local grayed = isGrayed(name, teamColorOf(name), ownTeamColor)
+local function buildRow(name, uuid, layout)
+    if game.disconnected[name] then return disconnectedRow() end
 
-    x = x + nameColumnWidth(name, uuid)
-    target = target + maxNameWidth
-    local namePad, namePadW = padSpaces(target - x)
-    x = x + namePadW
+    local remaining = respawnCountdown(name)
+    if remaining then return respawnRow(remaining) end
 
-    local parts = { namePad, " §8| " }
-    local sepW = textWidth(" §8| ")
-    x, target = x + sepW, target + sepW
+    local row = startRow(name, layout)
+    local nameAt, lastAt = layout.nameIndex, #layout.columns
 
-    joinColumns(parts, x, target, name, suffixColumns, widths, grayed, false)
+    emitCells(row, row.prefix, 1, nameAt - 1, true)
+    if nameAt > 1 then emitFixed(row, row.prefix, SEPARATOR) end
+    table.insert(row.prefix, nameColor(name, row.teamColor))
+
+    if nameAt < lastAt then
+        emitNameCell(row, uuid)
+        emitCells(row, row.suffix, nameAt + 1, lastAt, false)
+    end
+
+    return table.concat(row.prefix), table.concat(row.suffix)
+end
+
+local function headerLabelsLine(layout)
+    local parts = {}
+
+    for index, column in ipairs(layout.columns) do
+        if index > 1 then table.insert(parts, SEPARATOR) end
+
+        local label = column.isName and "Name" or column.header
+        local text = "§7" .. label
+        local pad = (padSpaces(layout.widths[index] - textWidth(label)))
+
+        if index < layout.nameIndex then
+            table.insert(parts, pad .. text)
+        else
+            table.insert(parts, text .. pad)
+        end
+    end
+
     return table.concat(parts)
 end
 
-local function headerLabelsLine(prefixColumns, suffixColumns, maxNameWidth)
-    local labels = {}
-    for _, column in ipairs(prefixColumns) do
-        table.insert(labels, column.header)
-    end
-    local namePad = padSpaces(maxNameWidth - textWidth("Name"))
-    table.insert(labels, "Name" .. namePad)
-    for _, column in ipairs(suffixColumns) do
-        table.insert(labels, column.header)
-    end
-    return "§7" .. table.concat(labels, " §8| §7")
-end
-
-local function respawnOverride(name)
-    if not getConfig("tab.showRespawns", true) then return nil end
-    local respawn = game.respawns[name]
-    if not respawn then return nil end
-    return "", " §8[§c" .. respawn.remaining .. "s§8]"
-end
-
-local function updateTabHeader(prefixColumns, suffixColumns, maxNameWidth)
-    if getConfig("tab.headerLabels", true) then
-        starfish.display.setTabHeaderAppend(headerLabelsLine(prefixColumns, suffixColumns, maxNameWidth))
-    else
-        starfish.display.clearTabHeaderAppend()
-    end
+local function updateTabHeader(layout)
+    starfish.display.setTabHeaderAppend(headerLabelsLine(layout))
 end
 
 local function clearTabDecorations()
     for _, entry in pairs(managed) do
         starfish.display.clearPrefix(entry.uuid)
         starfish.display.clearSuffix(entry.uuid)
+        starfish.display.releaseRemoval(entry.uuid)
     end
     starfish.display.clearTabHeaderAppend()
     managed = {}
@@ -699,7 +888,7 @@ local function deactivateTab()
     if not tabActive then return end
     tabActive = false
     if refreshTimer then
-        starfish.events.clearTimer(refreshTimer)
+        refreshTimer:off()
         refreshTimer = nil
     end
     clearTabDecorations()
@@ -714,43 +903,31 @@ local function refreshTab()
     if not dirty then return end
     dirty = false
 
-    local columns = enabledColumns()
-    local prefixColumns = columnsByPosition(columns, "prefix")
-    local suffixColumns = columnsByPosition(columns, "suffix")
-    local widths = computeColumnWidths(columns)
-    local ownTeamColor = myTeamColor()
-    local teamPrefixPad = computeMaxTeamPrefixWidth()
-    local maxNameWidth = computeMaxNameColumnWidth()
-    updateTabHeader(prefixColumns, suffixColumns, maxNameWidth)
+    snapshotIdentities()
+    syncRemovalHolds()
+
+    local layout = computeLayout()
+    updateTabHeader(layout)
 
     for name, entry in pairs(managed) do
-        local prefix, suffix = respawnOverride(name)
-        if not prefix then
-            local x, target
-            prefix, x, target = buildPrefix(name, prefixColumns, widths, ownTeamColor, teamPrefixPad)
-            suffix = buildSuffix(name, entry.uuid, suffixColumns, widths, ownTeamColor, maxNameWidth, x, target)
-        end
+        local prefix, suffix = buildRow(name, entry.uuid, layout)
         local combined = prefix .. "\0" .. suffix
         if lastApplied[entry.uuid] ~= combined then
             lastApplied[entry.uuid] = combined
             starfish.display.setPrefix(entry.uuid, prefix)
-            starfish.display.setSuffix(entry.uuid, suffix, SUFFIX_PRIORITY)
+            starfish.display.setSuffix(entry.uuid, suffix, { priority = SUFFIX_PRIORITY })
         end
     end
 end
 
 local function activateTab(names)
     if not tabEnabled() then return end
-    if tabMode() == "overlay" then
-        starfish.chat.send(starfish.chat.warning("Overlay mode is not available yet - using compact."))
-    end
 
     for _, name in ipairs(names) do
         if not managed[name] then
-            local player = starfish.players.find(name)
+            local player = starfish.players.byName(name)
             if player and player.uuid then
-                managed[name] = { uuid = player.uuid }
-                requestStats(name)
+                manage(name, player.uuid)
             else
                 pendingJoins[name] = true
             end
@@ -761,131 +938,43 @@ local function activateTab(names)
         tabActive = true
         dirty = true
         if not refreshTimer then
-            refreshTimer = starfish.events.interval(REFRESH_MS, refreshTab)
+            refreshTimer = starfish.timers.interval(REFRESH_MS, refreshTab)
         end
     end
 end
-
--- Tab entry protection
-
-local function shouldProtect(name)
-    if not managed[name] then return false end
-    if game.eliminated[name] and not getConfig("tab.keepEliminated", true) then
-        return false
-    end
-    return true
-end
-
-starfish.packets.intercept("inbound", starfish.protocol.PLAYER_LIST_ITEM, function(packet)
-    local reader = starfish.encoding.reader(packet.data)
-    reader:varint()
-    if reader:varint() ~= starfish.protocol.PLAYER_LIST_ACTION_REMOVE then return end
-
-    local protectedUuids = {}
-    for name, entry in pairs(managed) do
-        if shouldProtect(name) then
-            protectedUuids[entry.uuid] = true
-        end
-    end
-
-    local count = reader:varint()
-    local kept = {}
-    for _ = 1, count do
-        local uuid = reader:uuid()
-        if not protectedUuids[uuid] then
-            table.insert(kept, uuid)
-        end
-    end
-    if #kept == count then return end
-    if #kept == 0 then
-        packet.drop()
-        return
-    end
-
-    local writer = starfish.encoding.writer()
-    writer:varint(packet.id)
-    writer:varint(starfish.protocol.PLAYER_LIST_ACTION_REMOVE)
-    writer:varint(#kept)
-    for _, uuid in ipairs(kept) do
-        writer:uuid(uuid)
-    end
-    packet.replace(writer:build())
-end)
-
-starfish.packets.intercept("inbound", starfish.protocol.TEAMS, function(packet)
-    local reader = starfish.encoding.reader(packet.data)
-    reader:varint()
-    local teamName = reader:string()
-    if reader:byte() ~= starfish.protocol.TEAM_MODE_REMOVE_PLAYERS then return end
-
-    local protectedNames = {}
-    for name in pairs(managed) do
-        if shouldProtect(name) then
-            protectedNames[name] = true
-        end
-    end
-
-    local count = reader:varint()
-    local kept = {}
-    for _ = 1, count do
-        local playerName = reader:string()
-        if not protectedNames[playerName] then
-            table.insert(kept, playerName)
-        end
-    end
-    if #kept == count then return end
-    if #kept == 0 then
-        packet.drop()
-        return
-    end
-
-    local writer = starfish.encoding.writer()
-    writer:varint(packet.id)
-    writer:string(teamName)
-    writer:byte(starfish.protocol.TEAM_MODE_REMOVE_PLAYERS)
-    writer:varint(#kept)
-    for _, playerName in ipairs(kept) do
-        writer:string(playerName)
-    end
-    packet.replace(writer:build())
-end)
 
 -- Chat stat lines
 
-local function blockedMarker(name)
-    local entry = callPlugin("denicker", "getIgnoreEntry", getRealName(name) or name)
-    if not entry then return "" end
-    local note = entry.note and (" §7- " .. entry.note) or ""
-    return " §8[§cblocked" .. note .. "§8]"
+local function chatStatText(column, st, name)
+    local text = column.value(st, name)
+    if column.selfLabeled then return text end
+    return "§7" .. column.header .. " " .. text
 end
 
 local function statLine(name, st)
     local displayName = (st and st.displayName) or name
     if not st then
-        return teamFormatted(name, displayName) .. " §8- §cstats unavailable" .. blockedMarker(name)
+        return teamFormatted(name, displayName) .. " §8- §cstats unavailable"
     end
     if st.isNicked then
-        return teamFormatted(name, displayName) .. " §8- §cnicked" .. blockedMarker(name)
+        return teamFormatted(name, displayName) .. " §8- §cnicked"
     end
     if st.fetchError then
-        return teamFormatted(name, displayName) .. " §8- §crequest failed (" .. st.fetchError .. ")" .. blockedMarker(name)
+        return teamFormatted(name, displayName) .. " §8- §crequest failed (" .. st.fetchError .. ")"
     end
 
     local parts = {}
-    for _, column in ipairs(enabledColumns()) do
-        local text = column.value(st, name)
-        if column.key == "stars" then
-            table.insert(parts, text)
-        else
-            table.insert(parts, "§7" .. column.header .. " " .. text)
+    for _, column in ipairs(visibleColumns()) do
+        if not column.isName then
+            table.insert(parts, chatStatText(column, st, name))
         end
     end
-    return teamFormatted(name, displayName) .. " §8- §r" .. table.concat(parts, " §8| §r") .. blockedMarker(name)
+    return teamFormatted(name, displayName) .. " §8- §r" .. table.concat(parts, " §8| §r")
 end
 
 local function printStats(name)
     requestStats(name, function(st)
-        starfish.chat.send(starfish.chat.prefix(statLine(name, st)))
+        starfish.chat.info(statLine(name, st))
     end)
 end
 
@@ -905,9 +994,9 @@ local function heightBarText(remaining, limit)
 end
 
 local function updateHeightBar()
-    local pos = starfish.players.getPosition()
-    if not pos then return end
-    local remaining = heightWatch.limit - math.floor(pos.y)
+    local me = starfish.players.me()
+    if not me then return end
+    local remaining = heightWatch.limit - math.floor(me.position.y)
     if remaining <= HEIGHT_WARN_RANGE then
         starfish.chat.actionBar(heightBarText(remaining, heightWatch.limit))
     end
@@ -915,7 +1004,7 @@ end
 
 local function stopHeightWatch()
     if heightWatch.timer then
-        starfish.events.clearTimer(heightWatch.timer)
+        heightWatch.timer:off()
         heightWatch.timer = nil
     end
     heightWatch.limit = nil
@@ -923,41 +1012,40 @@ end
 
 local function startHeightWatch()
     stopHeightWatch()
-    if not getConfig("heightLimit.enabled", true) then return end
+    if not starfish.config.get("heightLimit.enabled", true) then return end
     heightWatch.limit = mapHeightLimit(location.map)
     if heightWatch.limit then
-        heightWatch.timer = starfish.events.interval(HEIGHT_BAR_MS, updateHeightBar)
+        heightWatch.timer = starfish.timers.interval(HEIGHT_BAR_MS, updateHeightBar)
     end
 end
 
 -- Game flow
 
 local function sendWho()
-    if not getConfig("who.enabled", true) then return end
+    if not starfish.config.get("who.enabled", true) then return end
     local now = os.time() * 1000
     if now - lastWhoAt < AUTO_WHO_DEDUPE_MS then return end
     lastWhoAt = now
 
-    starfish.events.delay(getConfig("who.delay", 500), function()
+    starfish.timers.delay(starfish.config.get("who.delay", 500), function()
         starfish.chat.sendToServer("/who")
     end)
 end
 
 local function resetGame()
     for _, respawn in pairs(game.respawns) do
-        starfish.events.clearTimer(respawn.timer)
+        respawn.timer:off()
     end
     game.started = false
     game.respawns = {}
     game.eliminated = {}
-    flagged = {}
+    game.disconnected = {}
     stopHeightWatch()
 end
 
 local function onGameStart()
     resetGame()
     game.started = true
-    lobby.active = false
     requeueTriggered = false
     sendWho()
     startHeightWatch()
@@ -965,10 +1053,10 @@ end
 
 local function performRequeue()
     if not lastMode then
-        starfish.chat.send(starfish.chat.error("No recent BedWars mode to requeue."))
+        starfish.chat.error("No recent BedWars mode to requeue.")
         return
     end
-    starfish.chat.send(starfish.chat.prefix("§7Requeueing §f" .. lastMode .. "§7..."))
+    starfish.chat.info("§7Requeueing §f" .. lastMode .. "§7...")
     starfish.chat.sendToServer("/play " .. lastMode)
 end
 
@@ -977,18 +1065,30 @@ local function onGameEnd()
     requeueTriggered = true
     game.started = false
     stopHeightWatch()
-    if not getConfig("requeue.auto", false) then return end
+    if not starfish.config.get("requeue.auto", false) then return end
 
-    starfish.events.delay(getConfig("requeue.delay", 1000), performRequeue)
+    starfish.timers.delay(starfish.config.get("requeue.delay", 1000), performRequeue)
 end
 
 -- Death and respawn tracking
 
 local function markEliminated(name)
     local respawn = game.respawns[name]
-    if respawn then starfish.events.clearTimer(respawn.timer) end
+    if respawn then respawn.timer:off() end
     game.respawns[name] = nil
     game.eliminated[name] = true
+    dirty = true
+end
+
+local function markDisconnected(name)
+    if game.disconnected[name] then return end
+    game.disconnected[name] = true
+    dirty = true
+end
+
+local function clearDisconnected(name)
+    if not game.disconnected[name] then return end
+    game.disconnected[name] = nil
     dirty = true
 end
 
@@ -1000,21 +1100,35 @@ local function markTeamEliminated(teamColor)
     end
 end
 
+-- Hypixel doesn't chat-announce a disconnect that happens while a player is
+-- already dead/respawning, so the only signal left is our own countdown:
+-- if they're not back in the roster shortly after it should have ended,
+-- they left during it.
+local function confirmRespawned(name)
+    if game.respawns[name] or not managed[name] then return end
+    if not starfish.players.byName(name) then
+        markDisconnected(name)
+    end
+end
+
 local function trackRespawn(name, seconds)
     if game.eliminated[name] then return end
     local existing = game.respawns[name]
-    if existing then starfish.events.clearTimer(existing.timer) end
+    if existing then existing.timer:off() end
 
     local respawn = { remaining = seconds }
     game.respawns[name] = respawn
-    respawn.timer = starfish.events.interval(1000, function()
+    respawn.timer = starfish.timers.interval(1000, function()
         respawn.remaining = respawn.remaining - 1
         dirty = true
         if respawn.remaining <= 0 then
-            starfish.events.clearTimer(respawn.timer)
+            respawn.timer:off()
             if game.respawns[name] == respawn then
                 game.respawns[name] = nil
             end
+            starfish.timers.delay(RESPAWN_CONFIRM_GRACE_MS, function()
+                confirmRespawned(name)
+            end)
         end
     end)
     dirty = true
@@ -1056,7 +1170,17 @@ local function handleGameChat(message)
 
     local reconnected = message:match("^([%w_]+) reconnected%.$")
     if reconnected and managed[reconnected] then
+        clearDisconnected(reconnected)
         trackRespawn(reconnected, RECONNECT_RESPAWN_SECONDS)
+        return true
+    end
+
+    local disconnected = message:match("^([%w_]+) disconnected%.")
+    if disconnected and managed[disconnected] then
+        markDisconnected(disconnected)
+        if message:sub(-11) == "FINAL KILL!" then
+            markEliminated(disconnected)
+        end
         return true
     end
 
@@ -1074,7 +1198,7 @@ local function handleGameChat(message)
     return false
 end
 
--- Lobby and mention stats
+-- Mention stats
 
 local function extractSpeaker(message)
     local before = message:match("^([^:]+):")
@@ -1082,26 +1206,21 @@ local function extractSpeaker(message)
     return before:match("([%w_]+)%s*$")
 end
 
-local function handleLobbyChat(message)
+local function handleMentionChat(message, kind)
+    if kind ~= "chat" then return end
+    if not starfish.config.get("mentionStats.enabled", true) then return end
+
     local speaker = extractSpeaker(message)
     if not speaker then return end
-    if not starfish.players.find(speaker) then return end
+    if not starfish.players.byName(speaker) then return end
 
     local me = starfish.players.me()
-    if me and speaker == me.name then return end
+    if not me or speaker == me.name or mentions.seen[speaker] then return end
 
-    if lobby.active and getConfig("lobbyStats.enabled", true) and not lobby.statsSeen[speaker] then
-        lobby.statsSeen[speaker] = true
+    local content = message:match("^[^:]+:%s*(.+)$")
+    if content and content:lower():find(me.name:lower(), 1, true) then
+        mentions.seen[speaker] = true
         printStats(speaker)
-        return
-    end
-
-    if getConfig("lobbyStats.mentions", true) and me and not lobby.mentionsSeen[speaker] then
-        local content = message:match("^[^:]+:%s*(.+)$")
-        if content and content:lower():find(me.name:lower(), 1, true) then
-            lobby.mentionsSeen[speaker] = true
-            printStats(speaker)
-        end
     end
 end
 
@@ -1113,7 +1232,7 @@ local function partyGroupSize(count, maxPlayers)
 end
 
 local function handlePartyCounter(message)
-    if not getConfig("partyCounter.enabled", true) then return end
+    if not starfish.config.get("partyCounter.enabled", true) then return end
 
     local _, maxPlayers = message:match("%((%d+)/(%d+)%)!$")
     if maxPlayers then party.maxPlayers = tonumber(maxPlayers) end
@@ -1125,15 +1244,15 @@ local function handlePartyCounter(message)
     party.count = party.count + 1
     party.isJoin = isJoin
     if party.timer then
-        starfish.events.clearTimer(party.timer)
+        party.timer:off()
     end
-    party.timer = starfish.events.delay(PARTY_GROUP_MS, function()
+    party.timer = starfish.timers.delay(PARTY_GROUP_MS, function()
         party.timer = nil
         if partyGroupSize(party.count, party.maxPlayers) then
             local arrow = party.isJoin and "»" or "«"
             local color = party.isJoin and "§b" or "§3"
             local verb = party.isJoin and "joined" or "left"
-            starfish.chat.send(starfish.chat.prefix("§8" .. arrow .. " §7Party of " .. color .. party.count .. " §7" .. verb .. "."))
+            starfish.chat.info("§8" .. arrow .. " §7Party of " .. color .. party.count .. " §7" .. verb .. ".")
         end
         party.count = 0
     end)
@@ -1142,25 +1261,20 @@ end
 -- Event wiring
 
 local function applyLocation(loc)
+    local changedServer = loc.serverName ~= location.server
+
+    location.server = loc.serverName
     location.inBedwars = loc.serverType == "BEDWARS"
-    local wasInGame = location.inGame
     location.inGame = location.inBedwars and loc.lobbyName == nil and loc.mode ~= nil
     location.map = loc.map
-
     if location.inGame then
         lastMode = loc.mode:lower()
-        if not wasInGame then
-            resetGame()
-            lobby.active = true
-            lobby.statsSeen = {}
-            lobby.mentionsSeen = {}
-        end
-    else
-        lobby.active = false
-        if wasInGame then
-            resetGame()
-            deactivateTab()
-        end
+    end
+
+    if changedServer then
+        resetGame()
+        deactivateTab()
+        mentions.seen = {}
     end
 
     if location.inGame and game.started and not heightWatch.timer then
@@ -1173,11 +1287,11 @@ starfish.events.on("hypixel:location", function(event)
     applyLocation(event.location)
 end)
 
-starfish.events.on("chat", function(event)
-    if event.position == 2 then return end
+starfish.events.on("chat:receive", function(event)
+    if event.kind == "actionBar" then return end
     if not location.inBedwars then return end
 
-    local message = stripColors(event.message or "")
+    local message = starfish.text.plain(event.message or "")
 
     local whoList = message:match("^ONLINE: (.+)$")
     if whoList then
@@ -1207,18 +1321,16 @@ starfish.events.on("chat", function(event)
 
     if game.started and handleGameChat(message) then return end
     handlePartyCounter(message)
-    handleLobbyChat(message)
+    handleMentionChat(message, event.kind)
 end)
 
-starfish.events.on("player_join", function(event)
+starfish.events.on("player:join", function(event)
     if not tabActive or not pendingJoins[event.name] then return end
     pendingJoins[event.name] = nil
-    managed[event.name] = { uuid = event.uuid }
-    requestStats(event.name)
-    dirty = true
+    manage(event.name, event.uuid)
 end)
 
-starfish.events.on("scoreboard_team", function()
+starfish.events.on("team:update", function()
     if tabActive then dirty = true end
 end)
 
@@ -1229,31 +1341,14 @@ starfish.events.on("denicker:nick_resolved", function(event)
     end
 end)
 
-starfish.events.on("anticheat:flag", function(event)
-    if flagged[event.name] then return end
-    flagged[event.name] = true
-    if managed[event.name] then dirty = true end
-end)
-
-starfish.events.on("plugin_restored", function(event)
-    if event.pluginName == "bedwars" then
-        deactivateTab()
-    end
-end)
-
-starfish.events.on("config_changed", function(event)
-    if event.plugin ~= "bedwars" then return end
+starfish.events.on("config:changed", function(event)
     if tabActive then dirty = true end
 
-    if event.key == "enabled" then
-        if event.value == false then
-            deactivateTab()
-            stopHeightWatch()
-        elseif location.inGame then
+    if event.key == "tab.enabled" then
+        syncTabSchemaVisibility()
+        if event.value == true and location.inGame and not tabActive then
             sendWho()
         end
-    elseif event.key == "tab.mode" and event.value ~= "off" and location.inGame and not tabActive then
-        sendWho()
     elseif event.key == "heightLimit.enabled" then
         if event.value == false then
             stopHeightWatch()
@@ -1268,33 +1363,29 @@ end)
 starfish.commands.register("stats", {
     description = "Show a player's BedWars stats",
     arguments = {
-        starfish.commands.arg("player", "Player name to look up")
+        { name = "player", type = "string", description = "Player name to look up" }
     }
-}, function(args)
-    if #args == 0 then
-        starfish.chat.send(starfish.chat.error("Usage: /bw stats <player>"))
-        return
-    end
-    printStats(args[1])
+}, function(ctx)
+    printStats(ctx.args.player)
 end)
 
 starfish.commands.register("height", {
     description = "Show the build height limit for a map",
     arguments = {
-        starfish.commands.greedy("map", "Map name (defaults to the current map)")
+        { name = "map", type = "greedy", optional = true, description = "Map name (defaults to the current map)" }
     }
-}, function(args)
-    local map = #args > 0 and table.concat(args, " ") or location.map
+}, function(ctx)
+    local map = ctx.args.map or location.map
     if not map then
-        starfish.chat.send(starfish.chat.error("No map detected. Usage: /bw height <map>"))
+        starfish.chat.error("No map detected. Usage: /bw height <map>")
         return
     end
 
     local height = mapHeightLimit(map)
     if height then
-        starfish.chat.send(starfish.chat.prefix("§bHeight limit for §a" .. map .. " §bis §e" .. height))
+        starfish.chat.info("§bHeight limit for §a" .. map .. " §bis §e" .. height)
     else
-        starfish.chat.send(starfish.chat.error("Unknown map: " .. map))
+        starfish.chat.error("Unknown map: " .. map)
     end
 end)
 
@@ -1304,9 +1395,14 @@ starfish.commands.registerGlobal("rq", {
     performRequeue()
 end)
 
+function plugin.onDisable()
+    deactivateTab()
+    stopHeightWatch()
+end
+
 -- Startup
 
-local restored = callPlugin("hypixel-mod-api", "getLocation")
+local restored = starfish.plugins.optional("hypixel-mod-api").getLocation()
 if restored and restored.serverName then
     applyLocation(restored)
 end
