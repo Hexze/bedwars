@@ -3,7 +3,7 @@ plugin = {
     displayName = "BedWars",
     command = "bw",
     prefix = "§cB§fW",
-    version = "0.3.0",
+    version = "0.3.1",
     author = "Starfish",
     description = "Various BedWars tools and quality of life features",
     readme = [[
@@ -31,9 +31,12 @@ local RETRY_BASE_MS = 2000
 local REFRESH_MS = 500
 local AUTO_WHO_DEDUPE_MS = 5000
 local PARTY_GROUP_MS = 250
+local SOLO_LOBBY_SIZE = 8
+local PARTY_GROUP_DENOMINATOR = 4
 local RESPAWN_SECONDS = 5
 local RECONNECT_RESPAWN_SECONDS = 10
 local RESPAWN_CONFIRM_GRACE_MS = 500
+local STATS_LOADING_TIMEOUT_MS = 10000
 local HEIGHT_BAR_MS = 250
 local HEIGHT_WARN_RANGE = 10
 local GAME_START_PHRASE = "powerful upgrades"
@@ -331,7 +334,7 @@ local game = { started = false, eliminated = {}, respawns = {}, disconnected = {
 local mentions = { seen = {} }
 local party = { count = 0, timer = nil, maxPlayers = 0, isJoin = false }
 local heightWatch = { limit = nil, timer = nil }
-local lastWhoAt = 0
+local lastWhoAt = nil
 local requeueTriggered = false
 
 local NICKED_STATS = { isNicked = true }
@@ -389,7 +392,7 @@ local function teamColorOf(name)
     for code in teamPrefixOf(name):gmatch("§([0-9a-f])") do
         last = code
     end
-    return last and ("§" .. last) or "§f"
+    return last and ("§" .. last) or nil
 end
 
 local function teamFormatted(name, displayText)
@@ -443,15 +446,18 @@ local function fetchStats(key, query, attempt)
         notifyFetched(key)
         return
     end
-    if cached and cached.isLoading and (attempt or 1) == 1 then return end
+    if cached and cached.isLoading and (attempt or 1) == 1
+        and starfish.time.monotonic() - cached.startedAt < STATS_LOADING_TIMEOUT_MS then
+        return
+    end
 
-    stats[key] = { isLoading = true }
+    stats[key] = { isLoading = true, startedAt = starfish.time.monotonic() }
     starfish.http.get(STATS_API .. query .. "&max_cache_age=" .. STATS_MAX_CACHE_AGE, {}, function(res)
         if res.success and res.data and res.data.player then
             stats[key] = parseBedwarsStats(res.data.player)
             notifyFetched(key)
         elseif res.success and res.data and res.data.player == nil then
-            stats[key] = { isNicked = true }
+            stats[key] = { isNicked = true, timestamp = os.time() }
             notifyFetched(key)
         else
             local tries = attempt or 1
@@ -652,7 +658,7 @@ local function snapshotIdentity(name, entry)
         entry.displayName = player.displayName or player.name
     end
     local team = resolveTeam(name)
-    if team and team.prefix and team.prefix ~= "" then
+    if team and team.prefix and starfish.text.plain(team.prefix) ~= "" then
         entry.teamPrefix = team.prefix
     end
 end
@@ -677,8 +683,7 @@ local function myTeamColor()
     return me and teamColorOf(me.name) or nil
 end
 
-local function isGrayed(name, teamColor, ownTeamColor)
-    if game.eliminated[name] then return true end
+local function isGrayed(teamColor, ownTeamColor)
     return ownTeamColor ~= nil and starfish.config.get("tab.grayOwnTeam", false) and teamColor == ownTeamColor
 end
 
@@ -791,9 +796,8 @@ local function respawnCountdown(name)
     return respawn and respawn.remaining
 end
 
-local function nameColor(name, teamColor)
-    if game.eliminated[name] then return GRAYED_COLOR end
-    return teamColor
+local function nameColor(teamColor)
+    return teamColor or ""
 end
 
 local DISCONNECTED_LABEL = "DISCONNECTED"
@@ -818,7 +822,7 @@ local function startRow(name, layout)
     return {
         name = name,
         teamColor = teamColor,
-        grayed = isGrayed(name, teamColor, layout.ownTeamColor),
+        grayed = isGrayed(teamColor, layout.ownTeamColor),
         layout = layout,
         prefix = { teamPad },
         suffix = {},
@@ -838,7 +842,7 @@ local function buildRow(name, uuid, layout)
 
     emitCells(row, row.prefix, 1, nameAt - 1, true)
     if nameAt > 1 then emitFixed(row, row.prefix, SEPARATOR) end
-    table.insert(row.prefix, nameColor(name, row.teamColor))
+    table.insert(row.prefix, nameColor(row.teamColor))
 
     if nameAt < lastAt then
         emitNameCell(row, uuid)
@@ -854,7 +858,7 @@ local function headerLabelsLine(layout)
     for index, column in ipairs(layout.columns) do
         if index > 1 then table.insert(parts, SEPARATOR) end
 
-        local label = column.isName and "Name" or column.header
+        local label = column.header
         local text = "§7" .. label
         local pad = (padSpaces(layout.widths[index] - textWidth(label)))
 
@@ -870,6 +874,16 @@ end
 
 local function updateTabHeader(layout)
     starfish.display.setTabHeaderAppend(headerLabelsLine(layout))
+end
+
+local function forgetPlayer(name)
+    local entry = managed[name]
+    if not entry then return end
+    starfish.display.clearPrefix(entry.uuid)
+    starfish.display.clearSuffix(entry.uuid)
+    starfish.display.releaseRemoval(entry.uuid)
+    lastApplied[entry.uuid] = nil
+    managed[name] = nil
 end
 
 local function clearTabDecorations()
@@ -1023,30 +1037,33 @@ end
 
 local function sendWho()
     if not starfish.config.get("who.enabled", true) then return end
-    local now = os.time() * 1000
-    if now - lastWhoAt < AUTO_WHO_DEDUPE_MS then return end
-    lastWhoAt = now
+    if lastWhoAt and starfish.time.since(lastWhoAt) < AUTO_WHO_DEDUPE_MS then return end
+    lastWhoAt = starfish.time.monotonic()
 
     starfish.timers.delay(starfish.config.get("who.delay", 500), function()
         starfish.chat.sendToServer("/who")
     end)
 end
 
-local function resetGame()
+local function stopRespawnTimers()
     for _, respawn in pairs(game.respawns) do
         respawn.timer:off()
     end
-    game.started = false
     game.respawns = {}
+end
+
+local function resetGame()
+    stopRespawnTimers()
+    game.started = false
     game.eliminated = {}
     game.disconnected = {}
+    requeueTriggered = false
     stopHeightWatch()
 end
 
 local function onGameStart()
     resetGame()
     game.started = true
-    requeueTriggered = false
     sendWho()
     startHeightWatch()
 end
@@ -1064,7 +1081,9 @@ local function onGameEnd()
     if requeueTriggered then return end
     requeueTriggered = true
     game.started = false
+    stopRespawnTimers()
     stopHeightWatch()
+    dirty = true
     if not starfish.config.get("requeue.auto", false) then return end
 
     starfish.timers.delay(starfish.config.get("requeue.delay", 1000), performRequeue)
@@ -1077,6 +1096,8 @@ local function markEliminated(name)
     if respawn then respawn.timer:off() end
     game.respawns[name] = nil
     game.eliminated[name] = true
+    game.disconnected[name] = nil
+    forgetPlayer(name)
     dirty = true
 end
 
@@ -1100,10 +1121,6 @@ local function markTeamEliminated(teamColor)
     end
 end
 
--- Hypixel doesn't chat-announce a disconnect that happens while a player is
--- already dead/respawning, so the only signal left is our own countdown:
--- if they're not back in the roster shortly after it should have ended,
--- they left during it.
 local function confirmRespawned(name)
     if game.respawns[name] or not managed[name] then return end
     if not starfish.players.byName(name) then
@@ -1227,8 +1244,8 @@ end
 -- Party counter
 
 local function partyGroupSize(count, maxPlayers)
-    if maxPlayers == 8 then return false end
-    return count >= 2 and count <= math.floor(maxPlayers / 4)
+    if maxPlayers == SOLO_LOBBY_SIZE then return false end
+    return count >= 2 and count <= math.floor(maxPlayers / PARTY_GROUP_DENOMINATOR)
 end
 
 local function handlePartyCounter(message)
@@ -1260,6 +1277,15 @@ end
 
 -- Event wiring
 
+local function resetForNewServer()
+    resetGame()
+    deactivateTab()
+    mentions.seen = {}
+    lastWhoAt = nil
+    if party.timer then party.timer:off() end
+    party = { count = 0, timer = nil, maxPlayers = 0, isJoin = false }
+end
+
 local function applyLocation(loc)
     local changedServer = loc.serverName ~= location.server
 
@@ -1272,9 +1298,7 @@ local function applyLocation(loc)
     end
 
     if changedServer then
-        resetGame()
-        deactivateTab()
-        mentions.seen = {}
+        resetForNewServer()
     end
 
     if location.inGame and game.started and not heightWatch.timer then
@@ -1285,6 +1309,11 @@ end
 starfish.events.on("hypixel:location", function(event)
     if not event.success then return end
     applyLocation(event.location)
+end)
+
+starfish.events.on("session:join", function()
+    resetForNewServer()
+    location.server = nil
 end)
 
 starfish.events.on("chat:receive", function(event)
@@ -1314,7 +1343,7 @@ starfish.events.on("chat:receive", function(event)
         return
     end
 
-    if message:find(GAME_END_PHRASE, 1, true) then
+    if message:find(GAME_END_PHRASE, 1, true) and not message:find(":", 1, true) then
         onGameEnd()
         return
     end
@@ -1394,11 +1423,6 @@ starfish.commands.registerGlobal("rq", {
 }, function()
     performRequeue()
 end)
-
-function plugin.onDisable()
-    deactivateTab()
-    stopHeightWatch()
-end
 
 -- Startup
 
