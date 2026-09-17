@@ -3,7 +3,7 @@ plugin = {
     displayName = "BedWars",
     command = "bw",
     prefix = "§cB§fW",
-    version = "0.3.1",
+    version = "0.3.2",
     author = "Starfish",
     description = "Various BedWars tools and quality of life features",
     readme = [[
@@ -1426,7 +1426,8 @@ end)
 
 -- Startup
 
-local restored = starfish.plugins.optional("hypixel-mod-api").getLocation()
+local hypixelModApi = starfish.plugins.optional("hypixel-mod-api")
+local restored = hypixelModApi and hypixelModApi.getLocation()
 if restored and restored.serverName then
     applyLocation(restored)
 end
