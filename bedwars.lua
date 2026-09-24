@@ -3,8 +3,7 @@ plugin = {
     displayName = "BedWars",
     command = "bw",
     prefix = "§cB§fW",
-    version = "0.3.2",
-    author = "Starfish",
+    version = "0.4.0",
     description = "Various BedWars tools and quality of life features",
     readme = [[
 Various BedWars tools and quality of life features
@@ -16,15 +15,14 @@ Various BedWars tools and quality of life features
 - Height limit indicator]],
 dependencies = {
         { name = "hypixel-mod-api", minVersion = "1.0.0" },
-        { name = "denicker",  optional = true },
-        { name = "urchin",    optional = true }
+        { name = "urchin", minVersion = "0.5.0" },
+        { name = "denicker", optional = true }
     }
 }
 
 -- Constants
 
-local STATS_API = "https://api.urchin.gg/v3/hypixel/player?player="
-local STATS_MAX_CACHE_AGE = "90s"
+local HYPIXEL_API_HOST = "https://api.hypixel.net/v2"
 local CACHE_TTL = 300
 local FETCH_RETRIES = 3
 local RETRY_BASE_MS = 2000
@@ -95,32 +93,7 @@ local HEIGHT_LIMITS = {
     zarzul = 115, zen_plaza = 84,
 }
 
--- Prestige schemes
-
-local PRESTIGE_SCHEMES = {
-    [0] = "7", "f", "6", "b", "2", "3", "4", "d", "9", "5",
-    "c6eabd5", "7ffff77", "7eeee67", "7bbbb37", "7aaaa27",
-    "7333397", "7cccc47", "7dddd57", "7999917", "7555587",
-    "87ff778", "ffee666", "66ffb33", "55dd6ee", "bbff778",
-    "ffaa222", "44ccdd5", "eeff888", "aa2266e", "bb33991",
-    "ee66cc4", "993366e", "c4774cc", "999dcc4", "2add552",
-    "cc442aa", "aaab991", "44ccb33", "11955d1", "ccaa399",
-    "55cc66e", "ee6cdd5", "193bf77", "0588550", "22ae65d",
-    "ffbb333", "3be66d5", "f4cc919", "55c66b3", "2afffa2",
-    "4459910", "4cc6ef4", "193bfe1", "5defed5", "3a282a3",
-    "2aefbd5", "4cefec4", "4623958", "5c6fb39", "7087ff7",
-    "cffffcf", "6efffb3", "efe66fe", "aeeeea2", "bbcccaa",
-    "33aafa3", "9ddddb9", "5ddddf5", "066eeff", "aaaa228",
-    "3bbbbf3", "4c6ec6e", "2af2af8", "233bba2", "88888d8",
-    "6622fff", "fff77c8", "dcccc6d", "87fffe8", "6f262f6",
-    "2aaac42", "87fb391", "fffffaf", "8844cc8", "fdddaaf",
-    "36666e3", "dffffed", "8666668", "444ccff", "9bbb339",
-    "ddddd58", "0c66cc4", "2dddda2", "f8888ff", "e648888",
-    "008877f", "eee00e0", "dddeebe", "0888880", "87fffef",
-    "9bfffc4",
-}
-
-local STAR_SYMBOLS = { [0] = "✫", "✪", "⚝", "✥", "✭" }
+-- Stat colors
 
 local function statTier(value, tiers)
     for _, tier in ipairs(tiers) do
@@ -142,6 +115,18 @@ local STAT_COLORS = {
     winstreak = function(v)
         return statTier(v, {{500, "5"}, {250, "d"}, {100, "4"}, {75, "c"}, {50, "6"}, {40, "e"}, {25, "2"}, {15, "a"}, {5, "f"}})
     end,
+}
+
+local TOTAL_COLORS = {
+    wlr        = function(v) return statTier(v, {{30, "5"}, {15, "d"}, {9, "4"}, {6, "c"}, {3, "6"}, {2.1, "e"}, {1.5, "2"}, {0.9, "a"}, {0.3, "f"}}) end,
+    bblr       = function(v) return statTier(v, {{20, "5"}, {10, "d"}, {6, "4"}, {4, "c"}, {2, "6"}, {1.4, "e"}, {1, "2"}, {0.6, "a"}, {0.2, "f"}}) end,
+    wins       = function(v) return statTier(v, {{30000, "5"}, {15000, "d"}, {7500, "4"}, {4500, "c"}, {2250, "6"}, {1500, "e"}, {450, "2"}, {300, "a"}, {150, "f"}}) end,
+    kills      = function(v) return statTier(v, {{75000, "5"}, {37500, "d"}, {18750, "4"}, {11250, "c"}, {5625, "6"}, {3750, "e"}, {1875, "2"}, {750, "a"}, {375, "f"}}) end,
+    bedsBroken = function(v) return statTier(v, {{50000, "5"}, {25000, "d"}, {12500, "4"}, {7500, "c"}, {3750, "6"}, {2500, "e"}, {1250, "2"}, {500, "a"}, {250, "f"}}) end,
+}
+
+local SESSION_COLORS = {
+    fkdr = function(v) return statTier(v, {{500, "5"}, {250, "d"}, {150, "4"}, {100, "c"}, {50, "6"}, {35, "e"}, {25, "2"}, {15, "a"}, {5, "f"}}) end,
 }
 
 -- Column slots
@@ -171,23 +156,42 @@ end
 -- Config schema
 
 local function registerTabSection()
+    local settings = {
+        { key = "tab.enabled", type = "toggle", default = true, description = "Show BedWars stats in the tab list." },
+    }
+    if starfish.config.get("tab.enabled", true) then
+        table.insert(settings, { key = "tab.grayOwnTeam", type = "toggle", default = false, displayLabel = "Gray Own Team", description = "Render your own team's stats in gray to de-emphasize them." })
+    end
+
     starfish.schema.section({
         key = "tab",
         label = "Tab Stats",
         description = "Show BedWars stats in the tab list after /who.",
+        settings = settings
+    })
+end
+
+local function registerStatsSourceSection()
+    starfish.schema.section({
+        key = "statsSource",
+        label = "Stats Source",
+        description = "Which source to try first for player stats.",
         settings = {
-            { key = "tab.enabled", type = "toggle", default = true, description = "Show BedWars stats in the tab list." },
+            { key = "statsSource.preferred", type = "cycle", default = "urchin", description = "Preferred stats source.", displayLabel = "Preferred", values = {
+                { text = "Urchin", value = "urchin" },
+                { text = "Hypixel", value = "hypixel" }
+            }},
         }
     })
 end
 
-local function registerGrayOwnTeamSection()
+local function registerHypixelApiSection()
     starfish.schema.section({
-        key = "grayOwnTeam",
-        label = "Gray Own Team",
-        description = "Render your own team's stats in gray to de-emphasize them.",
+        key = "hypixelApi",
+        label = "Hypixel API Key",
+        description = "Optional personal Hypixel API key, used as a fallback stats source. Doesn't include Bedwars-specific stats.",
         settings = {
-            { key = "tab.grayOwnTeam", type = "toggle", default = false, description = "Render your own team's stats in gray to de-emphasize them." },
+            { key = "hypixelApi.key", type = "text", default = "", description = "Get a key at developer.hypixel.net." },
         }
     })
 end
@@ -199,17 +203,7 @@ local function registerRespawnTimerSection()
         description = "Show a respawn countdown in a player's tab row while they are dead.",
         settings = {
             { key = "respawnTimer.enabled", type = "toggle", default = true, description = "Show a respawn countdown in a player's tab row while they are dead." },
-        }
-    })
-end
-
-local function registerKeepDisconnectedSection()
-    starfish.schema.section({
-        key = "keepDisconnected",
-        label = "Keep Disconnected",
-        description = "Keep a disconnected player's tab entry visible, marked [DISCONNECTED], until they reconnect.",
-        settings = {
-            { key = "keepDisconnected.enabled", type = "toggle", default = true, description = "Keep a disconnected player's tab entry visible, marked [DISCONNECTED], until they reconnect." },
+            { key = "keepDisconnected.enabled", type = "toggle", default = true, displayLabel = "Keep Disconnected", description = "Keep a disconnected player's tab entry visible, marked [DISCONNECTED], until they reconnect." },
         }
     })
 end
@@ -218,13 +212,13 @@ local function registerSlotSections()
     for index, slot in ipairs(SLOTS) do
         starfish.schema.section({
             key = "tab.slot" .. index,
-            label = "Column Slot " .. index,
-            description = "Configure tab column slot " .. index .. ".",
+            label = "Column " .. index,
+            description = "Configure tab column " .. index .. ".",
             settings = {
                 { key = slotKey(index, "enabled"), type = "toggle", default = slot.shown,
-                  description = "Show tab column slot " .. index .. "." },
+                  description = "Show tab column " .. index .. "." },
                 { key = slotKey(index, "content"), type = "cycle", default = slot.content, values = SLOT_CONTENTS,
-                  description = "What tab column slot " .. index .. " shows." },
+                  description = "What tab column " .. index .. " shows." },
             }
         })
     end
@@ -246,13 +240,15 @@ local function registerWhoSection()
     })
 end
 
-local function registerMentionStatsSection()
+local function registerChatStatsSection()
     starfish.schema.section({
-        key = "mentionStats",
-        label = "Show Stats On Mention",
-        description = "Show a player's stats whenever they mention your name in chat.",
+        key = "chatStats",
+        label = "Chat Stats",
+        description = "Show a player's stats in chat when they speak.",
         settings = {
-            { key = "mentionStats.enabled", type = "toggle", default = true, description = "Show a stat line for anyone whose chat message mentions your name." },
+            { key = "chatStats.enabled", type = "toggle", default = true, description = "Show a player's stats in chat when they speak." },
+            { key = "chatStats.mention", type = "toggle", default = true, displayLabel = "Mention", description = "Show a player's stats when their message mentions your name." },
+            { key = "chatStats.pregame", type = "toggle", default = true, displayLabel = "Pregame Messages", description = "Show a player's stats when they chat in the pre-game lobby." },
         }
     })
 end
@@ -279,36 +275,18 @@ local function registerHeightLimitSection()
     })
 end
 
-local function registerRequeueSection()
-    starfish.schema.section({
-        key = "requeue",
-        label = "Requeue",
-        description = "Requeue the last played mode with /rq.",
-        settings = {
-            { key = "requeue.auto", type = "toggle", default = false, description = "Automatically requeue when a game ends." },
-            { key = "requeue.delay", type = "cycle", default = 1000, description = "Delay before auto-requeueing.", displayLabel = "Delay", values = {
-                { text = "0ms", value = 0 },
-                { text = "1000ms", value = 1000 },
-                { text = "2000ms", value = 2000 },
-                { text = "3000ms", value = 3000 }
-            }},
-        }
-    })
-end
-
 local function registerSchema()
     registerWhoSection()
     registerTabSection()
+    registerRespawnTimerSection()
+    registerStatsSourceSection()
+    registerHypixelApiSection()
+    registerChatStatsSection()
+    registerHeightLimitSection()
+    registerPartyCounterSection()
     if starfish.config.get("tab.enabled", true) then
         registerSlotSections()
-        registerGrayOwnTeamSection()
     end
-    registerRespawnTimerSection()
-    registerKeepDisconnectedSection()
-    registerMentionStatsSection()
-    registerPartyCounterSection()
-    registerHeightLimitSection()
-    registerRequeueSection()
 end
 
 registerSchema()
@@ -331,11 +309,10 @@ local tabActive = false
 local refreshTimer = nil
 local dirty = false
 local game = { started = false, eliminated = {}, respawns = {}, disconnected = {} }
-local mentions = { seen = {} }
+local chatStats = { seen = {} }
 local party = { count = 0, timer = nil, maxPlayers = 0, isJoin = false }
 local heightWatch = { limit = nil, timer = nil }
 local lastWhoAt = nil
-local requeueTriggered = false
 
 local NICKED_STATS = { isNicked = true }
 
@@ -366,6 +343,11 @@ end
 local function resolveTeam(name)
     local player = starfish.players.byName(name)
     return player and player.team
+end
+
+local function hasTeamData(name)
+    local team = resolveTeam(name)
+    return team and team.prefix and starfish.text.plain(team.prefix) ~= ""
 end
 
 local function teamPrefixOf(name)
@@ -401,31 +383,51 @@ end
 
 -- Stats service
 
-local function levelFromXp(xp)
-    local level = 100 * math.floor(xp / 487000)
-    local rem = xp % 487000
-    if rem < 500 then return level end
-    if rem < 1500 then return level + 1 end
-    if rem < 3500 then return level + 2 end
-    if rem < 7000 then return level + 3 end
-    return level + 4 + math.floor((rem - 7000) / 5000)
+local BEDWARS_MODES = {
+    { "Solo", "eight_one" }, { "Doubles", "eight_two" },
+    { "Threes", "four_three" }, { "Fours", "four_four" }, { "4v4", "two_four" }
+}
+
+local function mostPlayedMode(bw)
+    local best, top = nil, 0
+    for _, mode in ipairs(BEDWARS_MODES) do
+        local games = (bw[mode[2] .. "_wins_bedwars"] or 0) + (bw[mode[2] .. "_losses_bedwars"] or 0)
+        if games > top then
+            top = games
+            best = mode[1]
+        end
+    end
+    return best
 end
 
 local function parseBedwarsStats(player)
     local bw = player.stats and player.stats.Bedwars or {}
     local fk = bw.final_kills_bedwars or 0
     local kills = bw.kills_bedwars or 0
-    local stars = player.achievements and player.achievements.bedwars_level
-        or levelFromXp(bw.Experience or 0)
+    local level = starfish.plugins.require("urchin").bedwarsLevel(bw.Experience, player.achievements and player.achievements.bedwars_level)
 
     return {
-        stars = stars,
+        xp = bw.Experience,
+        level = level.level,
+        progress = level.progress,
+        starText = level.starText,
+        nextStarText = level.nextStarText,
         fkdr = fk / math.max(1, bw.final_deaths_bedwars or 1),
         finals = fk,
         kdr = kills / math.max(1, bw.deaths_bedwars or 1),
         winstreak = bw.winstreak,
         displayName = player.displayname,
-        timestamp = os.time()
+        timestamp = os.time(),
+        totals = {
+            wins = bw.wins_bedwars or 0,
+            losses = bw.losses_bedwars or 0,
+            finalKills = fk,
+            finalDeaths = bw.final_deaths_bedwars or 0,
+            kills = kills,
+            deaths = bw.deaths_bedwars or 0,
+            bedsBroken = bw.beds_broken_bedwars or 0,
+            bedsLost = bw.beds_lost_bedwars or 0
+        }
     }
 end
 
@@ -440,7 +442,77 @@ local function notifyFetched(key)
     dirty = true
 end
 
-local function fetchStats(key, query, attempt)
+local function hypixelApiKey()
+    local key = starfish.config.get("hypixelApi.key", "")
+    return key ~= "" and key or nil
+end
+
+local function preferredSource()
+    return starfish.config.get("statsSource.preferred", "urchin")
+end
+
+local function otherSource(source)
+    return source == "hypixel" and "urchin" or "hypixel"
+end
+
+local function sourceAvailable(source, uuid)
+    if source == "hypixel" then return hypixelApiKey() ~= nil and uuid ~= nil end
+    return true
+end
+
+local pendingUrchinFetches = {}
+
+starfish.events.on("urchin:playerFetched", function(event)
+    local key = event.player and event.player:lower()
+    local onDone = key and pendingUrchinFetches[key]
+    if not onDone then return end
+    pendingUrchinFetches[key] = nil
+    onDone(event.data, event.error)
+end)
+
+local function fetchFromHypixel(uuid, callback)
+    local url = HYPIXEL_API_HOST .. "/player?key=" .. hypixelApiKey() .. "&uuid=" .. uuid
+    starfish.http.get(url, {}, function(res)
+        if res.success and res.data and res.data.player then
+            callback(res.data.player)
+        else
+            callback(nil, res.error or ("HTTP " .. tostring(res.status or "?")))
+        end
+    end)
+end
+
+local function fetchFromSource(source, key, query, uuid, callback)
+    if source == "hypixel" then
+        fetchFromHypixel(uuid, callback)
+    else
+        pendingUrchinFetches[key] = callback
+        starfish.plugins.require("urchin").fetchPlayer(query)
+    end
+end
+
+local fetchStats
+
+local function resolveFetch(key, query, uuid, attempt, player, err)
+    if player then
+        stats[key] = parseBedwarsStats(player)
+        notifyFetched(key)
+    elseif err == "nicked" then
+        stats[key] = { isNicked = true, timestamp = os.time() }
+        notifyFetched(key)
+    else
+        local tries = attempt or 1
+        if tries < FETCH_RETRIES then
+            starfish.timers.delay(RETRY_BASE_MS * 2 ^ (tries - 1), function()
+                fetchStats(key, query, uuid, tries + 1)
+            end)
+        else
+            stats[key] = { fetchError = err or "request failed" }
+            notifyFetched(key)
+        end
+    end
+end
+
+function fetchStats(key, query, uuid, attempt)
     local cached = stats[key]
     if cached and not cached.isLoading and cached.timestamp and os.time() - cached.timestamp < CACHE_TTL then
         notifyFetched(key)
@@ -452,24 +524,17 @@ local function fetchStats(key, query, attempt)
     end
 
     stats[key] = { isLoading = true, startedAt = starfish.time.monotonic() }
-    starfish.http.get(STATS_API .. query .. "&max_cache_age=" .. STATS_MAX_CACHE_AGE, {}, function(res)
-        if res.success and res.data and res.data.player then
-            stats[key] = parseBedwarsStats(res.data.player)
-            notifyFetched(key)
-        elseif res.success and res.data and res.data.player == nil then
-            stats[key] = { isNicked = true, timestamp = os.time() }
-            notifyFetched(key)
-        else
-            local tries = attempt or 1
-            if tries < FETCH_RETRIES then
-                starfish.timers.delay(RETRY_BASE_MS * 2 ^ (tries - 1), function()
-                    fetchStats(key, query, tries + 1)
-                end)
-            else
-                stats[key] = { fetchError = res.error or ("HTTP " .. tostring(res.status or "?")) }
-                notifyFetched(key)
-            end
+
+    local primary = preferredSource()
+    local fallback = otherSource(primary)
+    fetchFromSource(primary, key, query, uuid, function(player, err)
+        if player or err == "nicked" or not sourceAvailable(fallback, uuid) then
+            resolveFetch(key, query, uuid, attempt, player, err)
+            return
         end
+        fetchFromSource(fallback, key, query, uuid, function(fallbackPlayer, fallbackErr)
+            resolveFetch(key, query, uuid, attempt, fallbackPlayer, fallbackErr)
+        end)
     end)
 end
 
@@ -487,7 +552,8 @@ local function requestStats(name, callback)
         table.insert(fetchCallbacks[key], callback)
     end
 
-    fetchStats(key, query)
+    local player = starfish.players.byName(query) or starfish.players.byName(name)
+    fetchStats(key, query, player and player.uuid)
 end
 
 local function statsFor(name)
@@ -530,27 +596,6 @@ end
 
 -- Column formatting
 
-local function colorizeStars(stars)
-    local scheme = PRESTIGE_SCHEMES[math.min(math.floor(stars / 100), 100)]
-    local symbol = STAR_SYMBOLS[math.min(math.floor(stars / 1000), 4)]
-    local function color(slot)
-        local index = math.min(slot, #scheme)
-        return "§" .. scheme:sub(index, index)
-    end
-
-    local digitsText = tostring(math.floor(stars))
-    local parts = { color(1), "[" }
-    for i = 1, #digitsText do
-        table.insert(parts, color(2 + math.min(i - 1, 3)))
-        table.insert(parts, digitsText:sub(i, i))
-    end
-    table.insert(parts, color(6))
-    table.insert(parts, symbol)
-    table.insert(parts, color(7))
-    table.insert(parts, "]")
-    return table.concat(parts)
-end
-
 local function statsUnavailable(st)
     return st.isNicked or st.fetchError
 end
@@ -562,7 +607,7 @@ local COLUMNS = {
         value = function(st)
             if not st or st.isLoading then return "§8[---✫]" end
             if statsUnavailable(st) then return "§c[???✫]" end
-            return colorizeStars(st.stars)
+            return st.starText
         end
     },
     username = {
@@ -657,9 +702,8 @@ local function snapshotIdentity(name, entry)
     if player then
         entry.displayName = player.displayName or player.name
     end
-    local team = resolveTeam(name)
-    if team and team.prefix and starfish.text.plain(team.prefix) ~= "" then
-        entry.teamPrefix = team.prefix
+    if hasTeamData(name) then
+        entry.teamPrefix = resolveTeam(name).prefix
     end
 end
 
@@ -924,12 +968,14 @@ local function refreshTab()
     updateTabHeader(layout)
 
     for name, entry in pairs(managed) do
-        local prefix, suffix = buildRow(name, entry.uuid, layout)
-        local combined = prefix .. "\0" .. suffix
-        if lastApplied[entry.uuid] ~= combined then
-            lastApplied[entry.uuid] = combined
-            starfish.display.setPrefix(entry.uuid, prefix)
-            starfish.display.setSuffix(entry.uuid, suffix, { priority = SUFFIX_PRIORITY })
+        if entry.teamPrefix then
+            local prefix, suffix = buildRow(name, entry.uuid, layout)
+            local combined = prefix .. "\0" .. suffix
+            if lastApplied[entry.uuid] ~= combined then
+                lastApplied[entry.uuid] = combined
+                starfish.display.setPrefix(entry.uuid, prefix)
+                starfish.display.setSuffix(entry.uuid, suffix, { priority = SUFFIX_PRIORITY })
+            end
         end
     end
 end
@@ -962,20 +1008,13 @@ end
 local function chatStatText(column, st, name)
     local text = column.value(st, name)
     if column.selfLabeled then return text end
-    return "§7" .. column.header .. " " .. text
+    return "§7" .. column.header .. ": " .. text
 end
 
-local function statLine(name, st)
-    local displayName = (st and st.displayName) or name
-    if not st then
-        return teamFormatted(name, displayName) .. " §8- §cstats unavailable"
-    end
-    if st.isNicked then
-        return teamFormatted(name, displayName) .. " §8- §cnicked"
-    end
-    if st.fetchError then
-        return teamFormatted(name, displayName) .. " §8- §crequest failed (" .. st.fetchError .. ")"
-    end
+local function statSummary(name, st)
+    if not st then return "§cstats unavailable" end
+    if st.isNicked then return "§cnicked" end
+    if st.fetchError then return "§crequest failed (" .. st.fetchError .. ")" end
 
     local parts = {}
     for _, column in ipairs(visibleColumns()) do
@@ -983,13 +1022,219 @@ local function statLine(name, st)
             table.insert(parts, chatStatText(column, st, name))
         end
     end
-    return teamFormatted(name, displayName) .. " §8- §r" .. table.concat(parts, " §8| §r")
+    return "§r" .. table.concat(parts, " §8| §r")
+end
+
+local function statLine(name, st)
+    local displayName = (st and st.displayName) or name
+    return teamFormatted(name, displayName) .. " §8- " .. statSummary(name, st)
 end
 
 local function printStats(name)
     requestStats(name, function(st)
         starfish.chat.info(statLine(name, st))
     end)
+end
+
+-- Player check
+
+local TOP_WINSTREAKS = 3
+local PROGRESS_BAR_LENGTH = 15
+local COLUMN_GAP_WIDTH = 20
+local RULE = "§7§m-------------------------------------§r"
+
+local pendingChecks = {}
+local pendingSummaries = {}
+
+local function resolvePending(pending, event)
+    local key = event.player and event.player:lower()
+    local onDone = key and pending[key]
+    if not onDone then return end
+    pending[key] = nil
+    onDone(event)
+end
+
+starfish.events.on("urchin:checkFetched", function(event)
+    resolvePending(pendingChecks, event)
+end)
+
+starfish.events.on("urchin:summaryFetched", function(event)
+    resolvePending(pendingSummaries, event)
+end)
+
+local function formatRatio(value)
+    return (string.format("%.2f", value):gsub("%.00$", ""))
+end
+
+local function totalsRow(ratioLabel, countLabel, pos, neg, ratioColor, countColor)
+    local ratio = neg > 0 and pos / neg or pos
+    return {
+        ratio = "§7" .. ratioLabel .. ": " .. ratioColor(ratio) .. formatRatio(ratio),
+        counts = "§7" .. countLabel .. ": §8(" .. countColor(pos) .. formatNumber(pos) .. " §8/ §7" .. formatNumber(neg) .. "§8)"
+    }
+end
+
+local function alignColumns(rows)
+    local widest = 0
+    for _, row in ipairs(rows) do
+        widest = math.max(widest, textWidth(row.ratio))
+    end
+
+    local lines = {}
+    for i, row in ipairs(rows) do
+        lines[i] = row.ratio .. padSpaces(widest - textWidth(row.ratio) + COLUMN_GAP_WIDTH) .. row.counts
+    end
+    return lines
+end
+
+local function totalsLines(stats)
+    local t = stats and stats.totals
+    if not t or (t.wins == 0 and t.losses == 0 and t.finalKills == 0) then return nil end
+
+    return alignColumns({
+        totalsRow("WLR", "Wins", t.wins, t.losses, TOTAL_COLORS.wlr, TOTAL_COLORS.wins),
+        totalsRow("FKDR", "Finals", t.finalKills, t.finalDeaths, STAT_COLORS.fkdr, STAT_COLORS.finals),
+        totalsRow("KDR", "Kills", t.kills, t.deaths, STAT_COLORS.kdr, TOTAL_COLORS.kills),
+        totalsRow("BBLR", "Beds", t.bedsBroken, t.bedsLost, TOTAL_COLORS.bblr, TOTAL_COLORS.bedsBroken)
+    })
+end
+
+local function progressLine(stats)
+    local filled = math.floor(stats.progress * PROGRESS_BAR_LENGTH + 0.5)
+    return stats.starText
+        .. " §8[§b" .. ("■"):rep(filled)
+        .. "§7" .. ("■"):rep(PROGRESS_BAR_LENGTH - filled)
+        .. "§8] " .. stats.nextStarText
+end
+
+local function sessionStarsGained(bw, overall)
+    local xpGained = bw.Experience
+    if type(xpGained) ~= "number" or not (overall and overall.xp) then return 0 end
+    local before = starfish.plugins.require("urchin").bedwarsLevel(overall.xp - xpGained)
+    return overall.level - before.level
+end
+
+local function sessionSummary(session, overall)
+    local bw = session and session.delta and session.delta.stats and session.delta.stats.Bedwars
+    if not bw then return nil end
+
+    local fk, fd = bw.final_kills_bedwars or 0, bw.final_deaths_bedwars or 0
+    local beds = bw.beds_broken_bedwars or 0
+    if (bw.wins_bedwars or 0) == 0 and (bw.losses_bedwars or 0) == 0 and fk == 0 then return nil end
+
+    local header = "§7Session §8(§7Monthly§8)"
+    local mode = mostPlayedMode(bw)
+    if mode then header = header .. " §8| §7Most Played: §f" .. mode end
+
+    local fkdr = fk / math.max(1, fd)
+    local columns = {}
+    local stars = sessionStarsGained(bw, overall)
+    if stars > 0 then
+        table.insert(columns, "§b+" .. stars .. "✫")
+    end
+    table.insert(columns, "§7FKDR: " .. SESSION_COLORS.fkdr(fkdr) .. formatRatio(fkdr))
+    table.insert(columns, "§7Finals: " .. STAT_COLORS.finals(fk) .. formatNumber(fk))
+    table.insert(columns, "§7Beds: " .. TOTAL_COLORS.bedsBroken(beds) .. formatNumber(beds))
+
+    return { header, table.concat(columns, " §8| §r") }
+end
+
+local function winstreakLine(winstreaks)
+    local core = winstreaks and winstreaks.modes and winstreaks.modes.core
+    if not core or #core == 0 then return nil end
+
+    local badges = {}
+    local hoverLines = { "§fTop Winstreaks", RULE }
+    for i = 1, math.min(TOP_WINSTREAKS, #core) do
+        local streak = core[i]
+        local badge = "§8" .. i .. ". " .. STAT_COLORS.winstreak(streak.value) .. streak.value .. (streak.approximate and "+" or "")
+        table.insert(badges, badge)
+        table.insert(hoverLines, badge .. " §8— §7" .. (streak.readable or ""))
+    end
+    table.insert(hoverLines, "§8+ approximate")
+
+    return {
+        text = "§7Top Winstreaks: " .. table.concat(badges, " §8| "),
+        hover = table.concat(hoverLines, "\n")
+    }
+end
+
+local function specComponent(spec)
+    return starfish.text.of(spec.text):hover(spec.hover):suggest(spec.paste)
+end
+
+local function appendLine(parts, text, hover)
+    local line = starfish.text.of("\n" .. text)
+    table.insert(parts, hover and line:hover(hover) or line)
+end
+
+local function appendSession(parts, check, overall)
+    local summary = sessionSummary(check.session, overall)
+    local streaks = winstreakLine(check.winstreaks)
+
+    for _, line in ipairs(summary or {}) do
+        appendLine(parts, line)
+    end
+    if summary and streaks then
+        appendLine(parts, "")
+    end
+    if streaks then
+        appendLine(parts, streaks.text, streaks.hover)
+    end
+    if not summary and not streaks then
+        appendLine(parts, "§8No tracked session stats")
+    end
+end
+
+local function appendOverall(parts, name, overall)
+    local totals = totalsLines(overall)
+    if not totals then
+        appendLine(parts, statSummary(name, overall))
+        return
+    end
+
+    appendLine(parts, progressLine(overall))
+    appendLine(parts, "")
+    for _, line in ipairs(totals) do
+        appendLine(parts, line)
+    end
+end
+
+local function sendCheck(name, overall, check)
+    local parts = { starfish.text.of("\n" .. RULE .. "\n"), specComponent(check.header) }
+    for _, badge in ipairs(check.badges or {}) do
+        table.insert(parts, specComponent(badge))
+    end
+
+    appendOverall(parts, name, overall)
+    appendLine(parts, RULE)
+    appendSession(parts, check, overall)
+    if check.error then
+        appendLine(parts, "§7Urchin: §c" .. check.error)
+    end
+    appendLine(parts, RULE)
+
+    starfish.chat.info(starfish.text.join(parts))
+end
+
+local function printCheck(name)
+    local query = getRealName(name)
+    if not query and isNicked(name) then
+        printStats(name)
+        return
+    end
+    query = query or name
+
+    local overall, check
+    local remaining = 2
+    local function finish()
+        remaining = remaining - 1
+        if remaining == 0 then sendCheck(name, overall, check) end
+    end
+
+    requestStats(name, function(st) overall = st; finish() end)
+    pendingChecks[query:lower()] = function(result) check = result; finish() end
+    starfish.plugins.require("urchin").fetchCheck(query)
 end
 
 -- Height limit
@@ -1035,6 +1280,11 @@ end
 
 -- Game flow
 
+local function isPreGame()
+    local sidebar = starfish.scoreboard.displayed("sidebar")
+    return sidebar ~= nil and sidebar.name:match("^Pre") ~= nil
+end
+
 local function sendWho()
     if not starfish.config.get("who.enabled", true) then return end
     if lastWhoAt and starfish.time.since(lastWhoAt) < AUTO_WHO_DEDUPE_MS then return end
@@ -1057,7 +1307,6 @@ local function resetGame()
     game.started = false
     game.eliminated = {}
     game.disconnected = {}
-    requeueTriggered = false
     stopHeightWatch()
 end
 
@@ -1078,15 +1327,10 @@ local function performRequeue()
 end
 
 local function onGameEnd()
-    if requeueTriggered then return end
-    requeueTriggered = true
     game.started = false
     stopRespawnTimers()
     stopHeightWatch()
     dirty = true
-    if not starfish.config.get("requeue.auto", false) then return end
-
-    starfish.timers.delay(starfish.config.get("requeue.delay", 1000), performRequeue)
 end
 
 -- Death and respawn tracking
@@ -1130,6 +1374,7 @@ end
 
 local function trackRespawn(name, seconds)
     if game.eliminated[name] then return end
+    clearDisconnected(name)
     local existing = game.respawns[name]
     if existing then existing.timer:off() end
 
@@ -1187,7 +1432,6 @@ local function handleGameChat(message)
 
     local reconnected = message:match("^([%w_]+) reconnected%.$")
     if reconnected and managed[reconnected] then
-        clearDisconnected(reconnected)
         trackRespawn(reconnected, RECONNECT_RESPAWN_SECONDS)
         return true
     end
@@ -1215,7 +1459,26 @@ local function handleGameChat(message)
     return false
 end
 
--- Mention stats
+-- Chat stats
+
+local function sendChatStats(summary)
+    local parts = { starfish.text.of("\n" .. RULE .. "\n"), specComponent(summary.header) }
+    for _, badge in ipairs(summary.badges) do
+        table.insert(parts, specComponent(badge))
+    end
+    appendLine(parts, summary.line)
+    appendLine(parts, RULE)
+
+    starfish.chat.info(starfish.text.join(parts))
+end
+
+local function printChatStats(name)
+    local query = getRealName(name)
+    if not query and isNicked(name) then return end
+
+    pendingSummaries[(query or name):lower()] = sendChatStats
+    starfish.plugins.require("urchin").fetchSummary(query or name)
+end
 
 local function extractSpeaker(message)
     local before = message:match("^([^:]+):")
@@ -1223,21 +1486,29 @@ local function extractSpeaker(message)
     return before:match("([%w_]+)%s*$")
 end
 
-local function handleMentionChat(message, kind)
+local function mentionsMe(message, me)
+    local content = message:match("^[^:]+:%s*(.+)$")
+    return content ~= nil and content:lower():find(me.name:lower(), 1, true) ~= nil
+end
+
+local function shouldShowChatStats(message, me)
+    if starfish.config.get("chatStats.mention", true) and mentionsMe(message, me) then return true end
+    return starfish.config.get("chatStats.pregame", true) and location.inGame and isPreGame()
+end
+
+local function handleChatStats(message, kind)
     if kind ~= "chat" then return end
-    if not starfish.config.get("mentionStats.enabled", true) then return end
+    if not starfish.config.get("chatStats.enabled", true) then return end
 
     local speaker = extractSpeaker(message)
-    if not speaker then return end
-    if not starfish.players.byName(speaker) then return end
+    if not speaker or not starfish.players.byName(speaker) then return end
 
     local me = starfish.players.me()
-    if not me or speaker == me.name or mentions.seen[speaker] then return end
+    if not me or speaker == me.name or chatStats.seen[speaker] then return end
 
-    local content = message:match("^[^:]+:%s*(.+)$")
-    if content and content:lower():find(me.name:lower(), 1, true) then
-        mentions.seen[speaker] = true
-        printStats(speaker)
+    if shouldShowChatStats(message, me) then
+        chatStats.seen[speaker] = true
+        printChatStats(speaker)
     end
 end
 
@@ -1280,7 +1551,7 @@ end
 local function resetForNewServer()
     resetGame()
     deactivateTab()
-    mentions.seen = {}
+    chatStats.seen = {}
     lastWhoAt = nil
     if party.timer then party.timer:off() end
     party = { count = 0, timer = nil, maxPlayers = 0, isJoin = false }
@@ -1299,6 +1570,10 @@ local function applyLocation(loc)
 
     if changedServer then
         resetForNewServer()
+    end
+
+    if location.inGame and not game.started and not isPreGame() then
+        onGameStart()
     end
 
     if location.inGame and game.started and not heightWatch.timer then
@@ -1328,6 +1603,7 @@ starfish.events.on("chat:receive", function(event)
         local names = {}
         for name in whoList:gmatch("[^,%s]+") do
             table.insert(names, name)
+            clearDisconnected(name)
         end
         activateTab(names)
         return
@@ -1350,10 +1626,11 @@ starfish.events.on("chat:receive", function(event)
 
     if game.started and handleGameChat(message) then return end
     handlePartyCounter(message)
-    handleMentionChat(message, event.kind)
+    handleChatStats(message, event.kind)
 end)
 
 starfish.events.on("player:join", function(event)
+    clearDisconnected(event.name)
     if not tabActive or not pendingJoins[event.name] then return end
     pendingJoins[event.name] = nil
     manage(event.name, event.uuid)
@@ -1389,33 +1666,13 @@ end)
 
 -- Commands
 
-starfish.commands.register("stats", {
-    description = "Show a player's BedWars stats",
+starfish.commands.register("check", {
+    description = "Show a player's BedWars stats, session, and Urchin tags",
     arguments = {
         { name = "player", type = "string", description = "Player name to look up" }
     }
 }, function(ctx)
-    printStats(ctx.args.player)
-end)
-
-starfish.commands.register("height", {
-    description = "Show the build height limit for a map",
-    arguments = {
-        { name = "map", type = "greedy", optional = true, description = "Map name (defaults to the current map)" }
-    }
-}, function(ctx)
-    local map = ctx.args.map or location.map
-    if not map then
-        starfish.chat.error("No map detected. Usage: /bw height <map>")
-        return
-    end
-
-    local height = mapHeightLimit(map)
-    if height then
-        starfish.chat.info("§bHeight limit for §a" .. map .. " §bis §e" .. height)
-    else
-        starfish.chat.error("Unknown map: " .. map)
-    end
+    printCheck(ctx.args.player)
 end)
 
 starfish.commands.registerGlobal("rq", {
