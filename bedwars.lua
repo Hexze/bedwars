@@ -15,7 +15,7 @@ Various BedWars tools and quality of life features
 - Height limit indicator]],
 dependencies = {
         { name = "hypixel-mod-api", minVersion = "1.0.0" },
-        { name = "urchin", minVersion = "0.5.0" },
+        { name = "urchin", minVersion = "0.4.0" },
         { name = "denicker", optional = true }
     }
 }
