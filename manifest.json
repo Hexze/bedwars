@@ -1,0 +1,25 @@
+{
+  "name": "bedwars",
+  "display_name": "BedWars",
+  "version": "1.3.0",
+  "description": "Quality of life features for BedWars",
+  "homepage": null,
+  "dependencies": [
+    {
+      "name": "hypixel-mod-api",
+      "version": null,
+      "optional": false
+    },
+    {
+      "name": "urchin",
+      "version": null,
+      "optional": false
+    },
+    {
+      "name": "denicker",
+      "version": null,
+      "optional": true
+    }
+  ],
+  "min_starfish_version": null
+}
