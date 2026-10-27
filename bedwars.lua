@@ -3,7 +3,7 @@ plugin = {
     displayName = "BedWars",
     command = "bw",
     prefix = "§cB§fW",
-    version = "1.3.0",
+    version = "1.3.1",
     description = "Quality of life features for BedWars",
     dependencies = {
         { name = "hypixel-mod-api" },
@@ -890,6 +890,11 @@ local function printChatStats(speaker)
     return true
 end
 
+local function hasWhiteColon(legacy)
+    local before = legacy:match("^(.-)§f:")
+    return before ~= nil and not before:find(":", 1, true)
+end
+
 local function extractSpeaker(message)
     if message:sub(1, #NPC_PREFIX) == NPC_PREFIX then return nil end
 
@@ -1041,7 +1046,9 @@ starfish.events.on("chat:receive", function(event)
     end
 
     handlePartyCounter(message)
-    handleChatStats(message, event.kind)
+    if hasWhiteColon(event.message or "") then
+        handleChatStats(message, event.kind)
+    end
 end)
 
 starfish.events.on("entity:status", onEntityStatus)
