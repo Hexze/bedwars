@@ -3,7 +3,8 @@ plugin = {
     displayName = "BedWars",
     command = "bw",
     prefix = "§cB§fW",
-    version = "1.3.1",
+    version = "1.3.2",
+    minStarfishVersion = "0.1.0-beta.16",
     description = "Quality of life features for BedWars",
     dependencies = {
         { name = "hypixel-mod-api" },
@@ -444,22 +445,7 @@ end
 -- Text width
 
 local SPACE_WIDTH = 4
-local DEFAULT_CHAR_WIDTH = 6
-local CHAR_WIDTH = {
-    [" "] = SPACE_WIDTH,
-    ["!"] = 2, ["\""] = 4, ["'"] = 2, ["("] = 5, [")"] = 5, ["*"] = 4,
-    [","] = 2, ["."] = 2, [":"] = 2, [";"] = 2, ["<"] = 5, [">"] = 5,
-    ["@"] = 7, ["["] = 4, ["]"] = 4, ["`"] = 3, ["{"] = 5, ["|"] = 2, ["}"] = 5,
-    ["I"] = 4, ["f"] = 5, ["i"] = 2, ["k"] = 5, ["l"] = 3, ["t"] = 4,
-}
-
-local function textWidth(text)
-    local width = 0
-    for _, code in utf8.codes(starfish.text.plain(text)) do
-        width = width + (CHAR_WIDTH[utf8.char(code)] or DEFAULT_CHAR_WIDTH)
-    end
-    return width
-end
+local textWidth = starfish.display.textWidth
 
 local function spaceCount(deficit)
     if deficit <= 0 then return 0 end
